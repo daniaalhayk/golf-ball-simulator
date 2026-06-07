@@ -11,6 +11,7 @@ After running a simulation, the system provides a replay mode with video‑style
 - npm (comes with Node.js)
 
 ### Installation
+In your VS Code terminal — or any Bash‑compatible terminal — navigate to the directory where you want to clone this project. Then run the following commands:
 
 1. **Clone the repository**
    ```bash
