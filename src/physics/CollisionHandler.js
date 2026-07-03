@@ -1,205 +1,194 @@
 // physics/CollisionHandler.js
-// Handles all ground contact physics.
-// Two distinct physical regimes, applied in sequence:
+// Ground contact physics — two regimes:
+//   BOUNCING — Penner (2002) impact model
+//   ROLLING  — Cross (2024) extended with terrain-following + surface friction
 //
-//   1. BOUNCING — Penner (2002) impact model
-//      "The run of a golf ball", Canadian Journal of Physics, 80(9), 931–940
-//      Equations: 2a, 3a, 5a (PDF section 6)
-//
-//   2. ROLLING  — Cross (2024) slope model
-//      "Trajectory of a golf ball on a sloping green"
-//      European Journal of Physics, 45, 035002
-//      Equations: 11, 12, 15 (PDF section 7)
+// Key fixes vs previous version:
+//   1. groundY sampled AFTER position update (no one-step lag)
+//   2. Correct slope physics: friction = mu * g * cos(θ), not mu * g
+//   3. Speed clamped in rough/sand — prevents downhill runaway
+//   4. Safety stop after 25 s of rolling (catches any edge cases)
+//   5. _rollStartTime tracked from first entry into rolling phase
 
 import CONSTANTS from '../constants.js';
+
+// Surface type aliases for readability
+const S = CONSTANTS;
 
 class CollisionHandler {
 
   constructor() {
-    this.slopeAngleDeg = 0;   // set by ControlPanel via main.js
+    this.slopeAngleDeg  = 0;
+    this.terrain        = null;
+    this._rollStartTime = 0;   // simulation time when rolling began
   }
 
-  // ------------------------------------------------------------------
-  // setSlope()
-  // Called by main.js when the user changes the slope slider.
-  // ------------------------------------------------------------------
-  setSlope(angleDeg) {
-    this.slopeAngleDeg = angleDeg;
-  }
+  setSlope(angleDeg)    { this.slopeAngleDeg = angleDeg; }
+  setTerrain(sampler)   { this.terrain = sampler; }
 
-  // ------------------------------------------------------------------
-  // handle()
-  // Main entry point — called by main.js every frame when
-  // state.phase === 'bouncing' or state.phase === 'rolling'.
-  // ------------------------------------------------------------------
   handle(state) {
-    if (state.phase === 'bouncing') {
-      this._bounce(state);
-    } else if (state.phase === 'rolling') {
-      this._roll(state);
-    }
+    if      (state.phase === 'bouncing') this._bounce(state);
+    else if (state.phase === 'rolling')  this._roll(state);
   }
 
-  // ------------------------------------------------------------------
-  // _bounce()
-  // PDF section 6 — Penner (2002) impact model.
-  //
-  // Decomposes velocity into normal (Y) and tangential (X) components,
-  // applies variable restitution coefficient, then branches into
-  // sliding or pure rolling depending on friction (PDF section 6.3).
-  // ------------------------------------------------------------------
+  // ── Bounce — Penner (2002) ─────────────────────────────────────────
   _bounce(state) {
-
-    // Impact velocity components
-    // viy' = normal (vertical) impact speed — always negative on entry
-    // vix' = tangential (horizontal) impact speed
-    const viy = state.vy;   // normal component (negative = downward)
-    const vix = state.vx;   // tangential component
-
+    const viy    = state.vy;
+    const vix    = state.vx;
     const absViy = Math.abs(viy);
 
-    // --- 6.1: Variable restitution coefficient (Penner p.933) ---
-    // e = 0.510 − 0.0375·|viy'| + 0.000903·|viy'|²  for |viy'| ≤ 20 m/s
-    // e = 0.120                                        for |viy'| > 20 m/s
-    let e;
-    if (absViy <= 20) {
-      e = CONSTANTS.RESTITUTION_A
-        - CONSTANTS.RESTITUTION_B * absViy
-        + CONSTANTS.RESTITUTION_C * absViy ** 2;
-    } else {
-      e = CONSTANTS.RESTITUTION_MIN;
-    }
-
-    // Clamp e to physically valid range [0, 1]
+    // Variable restitution (Penner p.933)
+    let e = absViy <= 20
+      ? CONSTANTS.RESTITUTION_A - CONSTANTS.RESTITUTION_B * absViy + CONSTANTS.RESTITUTION_C * absViy ** 2
+      : CONSTANTS.RESTITUTION_MIN;
     e = Math.max(0, Math.min(1, e));
 
-    // --- 6.2: Normal force component — vertical bounce ---
-    // vry' = e · |viy'|  (rebound speed, upward)
-    const vry = e * absViy;   // positive = upward
+    const vry = e * absViy;
 
-    // --- 6.3: Determine sliding vs pure rolling (Penner p.933) ---
-    // Critical friction determines which regime applies.
-    // μc = (2/7) · (vix + r·ωz) / (|viy'| · (1 + e))
-    const mu_c = (2 / 7) *
-      (vix + CONSTANTS.RADIUS * state.wz) /
-      (absViy * (1 + e));
-
-    let vrx;  // post-bounce horizontal velocity
-
+    // Sliding / rolling transition at impact (Penner p.933)
+    const mu_c = (2 / 7) * (vix + CONSTANTS.RADIUS * state.wz) / (absViy * (1 + e));
+    let vrx;
     if (Math.abs(mu_c) > CONSTANTS.MU_FRICTION) {
-
-      // --- Sliding case (PDF section 6.3 — equation 2a) ---
-      // Ball slides on grass during bounce.
-      // vrx' = vix' − μ · |viy'| · (1 + e)
-      const sign = vix >= 0 ? 1 : -1;
-      vrx = vix - sign * CONSTANTS.MU_FRICTION * absViy * (1 + e);
-
+      vrx = vix - Math.sign(vix) * CONSTANTS.MU_FRICTION * absViy * (1 + e);
     } else {
-
-      // --- Pure rolling case (PDF section 6.3 — equation 3a) ---
-      // Friction is sufficient to stop sliding immediately.
-      // vrx' = (5/7)·vix' − (2/7)·r·ωz
-      // This equation shows how backspin converts to reverse linear motion.
       vrx = (5 / 7) * vix - (2 / 7) * CONSTANTS.RADIUS * state.wz;
-
     }
 
-    // --- Apply post-bounce velocities ---
-    state.vx = vrx;
-    state.vy = vry;
-    state.vz = state.vz * (1 - CONSTANTS.MU_FRICTION);  // lateral damping
-
-    // --- Spin decay on bounce ---
-    // Each bounce loses some spin due to surface contact.
+    state.vx  = vrx;
+    state.vy  = vry;
+    state.vz *= (1 - CONSTANTS.MU_FRICTION);
     state.wz *= 0.6;
     state.wy *= 0.6;
 
-    // --- 6.4: Transition condition (Penner p.935) ---
-    // If rebound speed is too low, stop bouncing and start rolling.
-    if (vry < 0.5 || state.y < CONSTANTS.ROLL_THRESHOLD) {
-      state.vy    = 0;
-      state.y     = 0;
-      state.phase = 'rolling';
+    const groundY = this.terrain ? this.terrain.getHeightAt(state.x, state.z) : 0;
+
+    if (vry < 0.5 || (state.y - groundY) < CONSTANTS.ROLL_THRESHOLD) {
+      state.vy            = 0;
+      state.y             = groundY;
+      state.phase         = 'rolling';
+      this._rollStartTime = state.time;   // record when rolling begins
     } else {
-      // Ball still has enough energy to bounce again — back to flying
       state.phase = 'flying';
     }
-
   }
 
-  // ------------------------------------------------------------------
-  // _roll()
-  // PDF section 7 — Cross (2024) slope rolling model.
+  // ── Roll — Cross (2024) + terrain + surface friction ──────────────
   //
-  // Computes deceleration from rolling friction and gravitational
-  // pull along the slope. Produces "The Break" — the curved path
-  // a ball follows on a sloped green.
+  // Physics on a slope (per unit mass):
+  //   Let n = terrain normal = (-dh/dx, 1, -dh/dz), |n| = sqrt(1 + dhdx² + dhdz²)
+  //   Normal force   = g / |n|           (gravity component ⊥ to surface)
+  //   Friction force = mu * g / |n|      (opposes velocity in X-Z plane)
+  //   Slope force X  = -g * dhdx / |n|²  (gravity component along surface, X)
+  //   Slope force Z  = -g * dhdz / |n|²  (gravity component along surface, Z)
   //
-  // Equations (Cross p.5):
-  //   ax = −A · (vx / |v|)
-  //   ay = −B − A · (vy / |v|)
-  //   where:
-  //     A = μR · g · cos(θ)   ← rolling friction deceleration
-  //     B = g · sin(θ) / 1.4  ← gravitational slope pull
-  // ------------------------------------------------------------------
+  // For gentle slopes |n| ≈ 1, which recovers the original flat formula.
+  // For the slopes produced by our terrain (max ~0.18 after amplitude fix),
+  // the difference is <2% — but the formula also correctly prevents runaway
+  // because friction now scales with cos(θ) just as slope force does.
   _roll(state) {
+    const dt = CONSTANTS.FIXED_DT;
 
-    const dt    = CONSTANTS.FIXED_DT;
-    const theta = (this.slopeAngleDeg * Math.PI) / 180;
-
-    const speed = Math.sqrt(state.vx ** 2 + state.vz ** 2);
-
-    // --- Termination condition (PDF section 11.1) ---
-    if (speed < CONSTANTS.MIN_SPEED) {
-      state.vx    = 0;
-      state.vy    = 0;
-      state.vz    = 0;
+    // ── Safety stop — catches any terrain edge case ─────────────────
+    // 25 s is far longer than any realistic shot roll (typical: 3–8 s)
+    if (state.time - this._rollStartTime > 25.0) {
+      state.vx = 0; state.vz = 0;
+      state.y  = this.terrain ? this.terrain.getHeightAt(state.x, state.z) : 0;
       state.phase = 'stopped';
       return;
     }
 
-    // --- Cross (2024) slope acceleration components ---
-    // A = rolling friction deceleration magnitude
-    // B = gravitational pull component down the slope
-    const A = CONSTANTS.MU_ROLL * CONSTANTS.GRAVITY * Math.cos(theta);
-    const B = CONSTANTS.GRAVITY * Math.sin(theta) / 1.4;
+    // ── Sample surface + gradient at CURRENT position ────────────────
+    const surface = this.terrain
+      ? this.terrain.getSurfaceAt(state.x, state.z)
+      : S.SURFACE_ROUGH;
 
-    // Unit vector of current velocity (direction of motion)
+    const mu = this._frictionForSurface(surface);
+
+    let dhdx = 0, dhdz = 0;
+    if (this.terrain) {
+      const D  = 1.5;                                         // sample step (m)
+      dhdx = (this.terrain.getHeightAt(state.x + D, state.z) -
+               this.terrain.getHeightAt(state.x - D, state.z)) / (2 * D);
+      dhdz = (this.terrain.getHeightAt(state.x, state.z + D) -
+               this.terrain.getHeightAt(state.x, state.z - D)) / (2 * D);
+    } else {
+      dhdx = Math.tan((this.slopeAngleDeg * Math.PI) / 180);
+    }
+
+    // ── Speed in rolling plane ────────────────────────────────────────
+    const speed = Math.sqrt(state.vx ** 2 + state.vz ** 2);
+
+    if (speed < CONSTANTS.MIN_SPEED) {
+      state.vx = 0; state.vz = 0; state.vy = 0;
+      state.y  = this.terrain ? this.terrain.getHeightAt(state.x, state.z) : 0;
+      state.phase = 'stopped';
+      return;
+    }
+
     const ux = state.vx / speed;
     const uz = state.vz / speed;
 
-    // Acceleration components
-    const ax = -A * ux - B;   // friction opposing motion + gravity on slope X
-    const az = -A * uz;       // friction opposing motion on slope Z
+    // ── Slope-corrected force components ─────────────────────────────
+    // |n|² = 1 + dhdx² + dhdz²
+    const lenSq     = 1.0 + dhdx * dhdx + dhdz * dhdz;
+    const lenN      = Math.sqrt(lenSq);           // |n|
 
-    // --- Semi-implicit Euler integration (same method as PhysicsEngine) ---
+    const frictionAcc = mu * CONSTANTS.GRAVITY / lenN;          // mu*g*cos(θ)
+    const slopeAx     = -CONSTANTS.GRAVITY * dhdx / lenSq;      // gravity X along surface
+    const slopeAz     = -CONSTANTS.GRAVITY * dhdz / lenSq;      // gravity Z along surface
+
+    const ax = -frictionAcc * ux + slopeAx;
+    const az = -frictionAcc * uz + slopeAz;
+
+    // ── Integrate velocity ────────────────────────────────────────────
     state.vx += ax * dt;
     state.vz += az * dt;
 
-    state.x  += state.vx * dt;
-    state.z  += state.vz * dt;
+    // ── Speed clamp in rough/sand/water ──────────────────────────────
+    // Real rough and sand physically grip the ball and prevent downhill
+    // acceleration even on steep slopes. If the ball would be going faster
+    // after this step, cap it to its entry speed.
+    if (surface === S.SURFACE_ROUGH ||
+        surface === S.SURFACE_SAND  ||
+        surface === S.SURFACE_WATER) {
+      const newSpeed = Math.sqrt(state.vx ** 2 + state.vz ** 2);
+      if (newSpeed > speed) {
+        const ratio = speed / newSpeed;
+        state.vx *= ratio;
+        state.vz *= ratio;
+      }
+    }
 
-    // Ball stays on the ground during rolling
-    state.y   = 0;
-    state.vy  = 0;
+    // ── Integrate position ────────────────────────────────────────────
+    state.x += state.vx * dt;
+    state.z += state.vz * dt;
 
-    // Spin decays gradually during rolling
+    // ── Snap Y to terrain at NEW position ────────────────────────────
+    // Sampled AFTER position update — no one-step lag.
+    state.y  = this.terrain ? this.terrain.getHeightAt(state.x, state.z) : 0;
+    state.vy = 0;
+
+    // Spin decays during rolling
     state.wz *= 0.98;
     state.wy *= 0.98;
 
     state.time += dt;
+  }
 
+  // ── Surface friction lookup ────────────────────────────────────────
+  _frictionForSurface(surface) {
+    switch (surface) {
+      case S.SURFACE_GREEN:   return S.MU_ROLL_GREEN;
+      case S.SURFACE_FRINGE:  return S.MU_ROLL_FRINGE;
+      case S.SURFACE_FAIRWAY: return S.MU_ROLL_FAIRWAY;
+      case S.SURFACE_TEE:     return S.MU_ROLL_TEE;
+      case S.SURFACE_ROUGH:   return S.MU_ROLL_ROUGH;
+      case S.SURFACE_SAND:    return S.MU_ROLL_SAND;
+      case S.SURFACE_WATER:   return S.MU_ROLL_WATER;
+      default:                return S.MU_ROLL;
+    }
   }
 
 }
 
 export default CollisionHandler;
-
-
-/*
-The Penner restitution formula (section 6.1) is implemented exactly as written — the quadratic e formula for speeds under 20 m/s, and the flat e = 0.120 floor above it. The clamp to [0, 1] is a safety measure since the quadratic can technically produce values outside that range at extreme speeds.
-The sliding vs rolling branch (section 6.3) is the most important part of the collision model. The critical friction μc determines which equation applies — this is the distinction your PDF highlights as the difference between a simple simulation and a realistic one. The comment on the pure rolling equation explains the physics: backspin (wz) directly opposes forward motion, which is exactly why a professional's backspin shot can make the ball roll backwards.
-The Cross (2024) slope model (section 7) uses vx and vz for the rolling plane, with vy forced to zero since the ball is on the ground. The B term is what produces "The Break" — without it, the ball would just decelerate in a straight line regardless of slope.
-
-
-*/

@@ -49,13 +49,18 @@ export function drag(state, wind = { vx: 0, vy: 0, vz: 0 }) {
 
 // ------------------------------------------------------------------
 // magnus()
-// Section 4.3 — F⃗M = S · (ω⃗ × v⃗)
-// Cross product of spin vector and velocity vector, scaled by S.
+// Section 4.3 — F⃗M = S · (ω⃗ × v⃗rel)
+// Cross product of spin vector and RELATIVE velocity vector, scaled by S.
 //
-// Cross product expanded:
-//   (ω × v).x = ωy·vz − ωz·vy
-//   (ω × v).y = ωz·vx − ωx·vz
-//   (ω × v).z = ωx·vy − ωy·vx
+// Paper Eq.11–13 (Burglund & Street, Hinrichsen): the cross product
+// must use vrel = vball − vwind, not absolute ball velocity.
+// This matches how drag is computed and ensures consistent aerodynamic
+// reference frame — forces act on velocity relative to the air mass.
+//
+// Cross product expanded (using vrel components):
+//   (ω × vrel).x = ωy·vrel,z − ωz·vrel,y
+//   (ω × vrel).y = ωz·vrel,x − ωx·vrel,z
+//   (ω × vrel).z = ωx·vrel,y − ωy·vrel,x
 //
 // Spin effects (Jorgensen Chapter 8):
 //   ωz > 0  → backspin → lift upward  (positive Y force)
@@ -64,14 +69,19 @@ export function drag(state, wind = { vx: 0, vy: 0, vz: 0 }) {
 //
 // Returns: { fx, fy, fz }
 // ------------------------------------------------------------------
-export function magnus(state) {
-  const { vx, vy, vz, wx, wy, wz } = state;
+export function magnus(state, wind = { vx: 0, vy: 0, vz: 0 }) {
+  const { wx, wy, wz } = state;
   const S = CONSTANTS.MAGNUS_S;
 
+  // Relative velocity components — paper Eq.9
+  const vrx = state.vx - wind.vx;
+  const vry = state.vy - wind.vy;
+  const vrz = state.vz - wind.vz;
+
   return {
-    fx: S * (wy * vz - wz * vy),
-    fy: S * (wz * vx - wx * vz),
-    fz: S * (wx * vy - wy * vx),
+    fx: S * (wy * vrz - wz * vry),
+    fy: S * (wz * vrx - wx * vrz),
+    fz: S * (wx * vry - wy * vrx),
   };
 }
 
@@ -84,7 +94,7 @@ export function magnus(state) {
 export function totalForce(state, wind) {
   const g = gravity();
   const d = drag(state, wind);
-  const m = magnus(state);
+  const m = magnus(state, wind);   // wind passed so Magnus uses vrel (paper Eq.11–13)
 
   return {
     fx: g.fx + d.fx + m.fx,

@@ -1,91 +1,12 @@
 // physics/BallState.js
-// Represents the full physical state of the golf ball at any instant.
-// This is the single object that PhysicsEngine reads and writes each step.
-// Import: constants only.
+// Full physical state of the golf ball at any instant.
+// PhysicsEngine reads and writes this each step.
 
 import CONSTANTS from '../constants.js';
 
 class BallState {
 
   constructor() {
-    // Position vector (m)
-    this.x  = 0;
-    this.y  = 0;
-    this.z  = 0;
-
-    // Velocity vector (m/s)
-    this.vx = 0;
-    this.vy = 0;
-    this.vz = 0;
-
-    // Angular velocity / spin vector (rad/s)
-    // ωz → backspin/topspin (produces Magnus lift on Y axis)
-    // ωy → hook/slice spin  (produces Magnus deviation on Z axis)
-    // ωx → rarely used, side-tilt
-    this.wx = 0;
-    this.wy = 0;
-    this.wz = 0;
-
-    // Simulation phase
-    // 'idle' | 'flying' | 'bouncing' | 'rolling' | 'stopped'
-    this.phase = 'idle';
-
-    // Elapsed simulation time (s)
-    this.time = 0;
-  }
-
-  // ------------------------------------------------------------------
-  // init()
-  // Called once when the user launches a shot.
-  // params = { v0, angleDeg, spinRpm, spinAxisY }
-  //   v0         — launch speed (m/s)
-  //   angleDeg   — launch angle above horizontal (degrees)
-  //   spinRpm    — backspin in RPM (positive = backspin)
-  //   spinAxisY  — hook/slice spin in RPM (positive = slice right)
-  // ------------------------------------------------------------------
-  init(params) {
-    const { v0, angleDeg, spinRpm, spinAxisY = 0 } = params;
-
-    const angleRad = (angleDeg * Math.PI) / 180;
-
-    // Section 3 of PDF — launch vector decomposition
-    this.x  = 0;
-    this.y  = 0;
-    this.z  = 0;
-
-    this.vx = v0 * Math.cos(angleRad);  // forward velocity
-    this.vy = v0 * Math.sin(angleRad);  // vertical velocity
-    this.vz = 0;                         // no lateral velocity at launch
-
-    // Convert RPM → rad/s  (ω = RPM × 2π / 60)
-    this.wx = 0;
-    this.wy = (spinAxisY * 2 * Math.PI) / 60;  // hook/slice axis
-    this.wz = (spinRpm   * 2 * Math.PI) / 60;  // backspin axis
-
-    this.phase = 'flying';
-    this.time  = 0;
-  }
-
-  // ------------------------------------------------------------------
-  // clone()
-  // Returns a plain snapshot of the current state.
-  // Used by TrailRenderer to record trajectory points.
-  // ------------------------------------------------------------------
-  clone() {
-    return {
-      x: this.x, y: this.y, z: this.z,
-      vx: this.vx, vy: this.vy, vz: this.vz,
-      wx: this.wx, wy: this.wy, wz: this.wz,
-      phase: this.phase,
-      time: this.time,
-    };
-  }
-
-  // ------------------------------------------------------------------
-  // reset()
-  // Returns ball to idle state. Called before each new launch.
-  // ------------------------------------------------------------------
-  reset() {
     this.x  = 0; this.y  = 0; this.z  = 0;
     this.vx = 0; this.vy = 0; this.vz = 0;
     this.wx = 0; this.wy = 0; this.wz = 0;
@@ -94,37 +15,88 @@ class BallState {
   }
 
   // ------------------------------------------------------------------
-  // speed()
-  // Returns the scalar speed of the ball (magnitude of velocity vector)
+  // init()
+  // Called once when the user launches a shot.
+  //
+  // params = { v0, angleDeg, spinRpm, spinAxisY, aimDeg }
+  //   v0        — launch speed (m/s)
+  //   angleDeg  — launch angle above horizontal (degrees)
+  //   spinRpm   — backspin in RPM (positive = backspin = lift)
+  //   spinAxisY — hook/slice spin in RPM (positive = slice right)
+  //   aimDeg    — horizontal aim direction (degrees, 0 = +X, 90 = +Z)
+  //
+  // Aim direction decomposition:
+  //   The ball always launches from (0,0,0).
+  //   aimDeg rotates the forward direction around the Y axis.
+  //   0°   → fires along +X (original default)
+  //   90°  → fires along +Z
+  //   -90° → fires along -Z
+  //   180° → fires along -X
+  //
+  // Spin axis rotation:
+  //   Backspin axis must be perpendicular to the aim direction
+  //   in the horizontal plane — not always +Z.
+  //   For aimDeg=0:   backspin axis = +Z  (wx=0,  wz=ω)
+  //   For aimDeg=90:  backspin axis = -X  (wx=-ω, wz=0)
+  //   General:        wx = -ω·sin(aim),   wz = ω·cos(aim)
+  //   Hook/slice spin is always about the world Y axis (wy), independent of aim.
   // ------------------------------------------------------------------
+  init(params) {
+    const { v0, angleDeg, spinRpm, spinAxisY = 0, aimDeg = 0 } = params;
+
+    const angleRad = (angleDeg * Math.PI) / 180;
+    const aimRad   = (aimDeg   * Math.PI) / 180;
+
+    this.x = 0; this.y = 0; this.z = 0;
+
+    // Horizontal speed
+    const hSpeed = v0 * Math.cos(angleRad);
+
+    // Velocity decomposed into aim direction
+    this.vx = hSpeed * Math.cos(aimRad);
+    this.vy = v0     * Math.sin(angleRad);
+    this.vz = hSpeed * Math.sin(aimRad);
+
+    // Spin: convert RPM → rad/s, then rotate backspin axis with aim
+    const spinOmega = (spinRpm   * 2 * Math.PI) / 60;
+    const sideOmega = (spinAxisY * 2 * Math.PI) / 60;
+
+    this.wx = -spinOmega * Math.sin(aimRad);  // backspin x-component
+    this.wy =  sideOmega;                      // hook/slice = always world-Y
+    this.wz =  spinOmega * Math.cos(aimRad);  // backspin z-component
+
+    this.phase = 'flying';
+    this.time  = 0;
+  }
+
+  clone() {
+    return {
+      x: this.x, y: this.y, z: this.z,
+      vx: this.vx, vy: this.vy, vz: this.vz,
+      wx: this.wx, wy: this.wy, wz: this.wz,
+      phase: this.phase, time: this.time,
+    };
+  }
+
+  reset() {
+    this.x  = 0; this.y  = 0; this.z  = 0;
+    this.vx = 0; this.vy = 0; this.vz = 0;
+    this.wx = 0; this.wy = 0; this.wz = 0;
+    this.phase = 'idle';
+    this.time  = 0;
+  }
+
   speed() {
     return Math.sqrt(this.vx ** 2 + this.vy ** 2 + this.vz ** 2);
   }
 
-  // ------------------------------------------------------------------
-  // isFinite()
-  // NaN guard — returns false if any value has gone invalid.
-  // Called by PhysicsEngine after every integration step.
-  // ------------------------------------------------------------------
   isFinite() {
     return (
-      Number.isFinite(this.x)  &&
-      Number.isFinite(this.y)  &&
-      Number.isFinite(this.z)  &&
-      Number.isFinite(this.vx) &&
-      Number.isFinite(this.vy) &&
-      Number.isFinite(this.vz)
+      Number.isFinite(this.x)  && Number.isFinite(this.y)  && Number.isFinite(this.z)  &&
+      Number.isFinite(this.vx) && Number.isFinite(this.vy) && Number.isFinite(this.vz)
     );
   }
 
 }
 
-export default BallState; 
-
-/**
-A few things to note:
-Spin is stored in rad/s internally, not RPM. The conversion happens once in init() — everything downstream works in SI units consistently, which matches your PDF's equations directly.
-clone() returns a plain object, not a BallState instance. This is intentional — the trail only needs the numbers, not the methods. It keeps the snapshot lightweight.
-The phase string is the simple state machine mentioned earlier — PhysicsEngine and CollisionHandler will read and write this to know which physics regime is currently active.
-move to physics/Forces.js 
- */
+export default BallState;
