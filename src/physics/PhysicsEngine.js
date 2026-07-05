@@ -77,10 +77,15 @@ class PhysicsEngine {
     }
 
     // --- Out of bounds ---
-    if (
-      Math.abs(state.x) > CONSTANTS.COURSE_SIZE ||
-      Math.abs(state.z) > CONSTANTS.COURSE_SIZE
-    ) {
+    // Uses the terrain's own extent when available — map size now varies
+    // per hole (short par 3 vs long par 5), so a fixed constant would
+    // either clip short holes early or let long holes fly past their
+    // rendered terrain.
+    const bound = this.terrain && this.terrain.getBounds
+      ? this.terrain.getBounds()
+      : CONSTANTS.COURSE_SIZE;
+
+    if (Math.abs(state.x) > bound || Math.abs(state.z) > bound) {
       state.phase = 'stopped';
       return;
     }

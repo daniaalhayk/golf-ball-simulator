@@ -171,7 +171,7 @@ class CourseMesh {
     this.landscapeStyle = 'parkland';
 
     this.GRID = 512;   // grid resolution — higher = smaller squares
-    this.WORLD_SIZE = 800;   // metres, spans -400 to +400
+    this.WORLD_SIZE = 300;   // metres — recomputed per hole in loadHole()/init()
 
     this.heightField  = new Float32Array(this.GRID * this.GRID);
     this.surfaceField = new Uint8Array(this.GRID * this.GRID);
@@ -179,19 +179,48 @@ class CourseMesh {
     this._greenSlopeDeg = 0;
     this._disposables   = [];
     this._aimArrow      = null;
+
+    this.currentHoleId  = 1;
+    this._activeHoles   = [];   // single localized hole currently loaded
   }
 
   // ── Public API ─────────────────────────────────────────────────────
 
   init(scene) {
     this.scene = scene;
+    this._activeHoles = [this._localizeHole(this._findHole(this.currentHoleId))];
+    this.WORLD_SIZE   = this._computeWorldSizeForHole(this._activeHoles[0]);
+    this._buildCourse(this.landscapeStyle);
+  }
+
+  // Loads a single hole as its own standalone map — tee at local (0,0),
+  // green direction aligned to +X — so the existing physics/camera code
+  // (which always launches from world origin along aimDeg) needs no changes
+  // regardless of which of the 18 holes is selected.
+  loadHole(holeNumber) {
+    this.currentHoleId  = holeNumber;
+    this._activeHoles   = [this._localizeHole(this._findHole(holeNumber))];
+    this.WORLD_SIZE     = this._computeWorldSizeForHole(this._activeHoles[0]);
+    this._greenSlopeDeg = 0;
+    this._disposeAll();
     this._buildCourse(this.landscapeStyle);
   }
 
   setLandscape(style) {
     this.landscapeStyle = style;
     this._greenSlopeDeg = 0;
+    this._disposeAll();
+    this._buildCourse(style);
+  }
 
+  // Half-extent of the currently loaded map. Physics uses this for the
+  // out-of-bounds check instead of a fixed constant, since map size now
+  // varies per hole (short par 3 vs long par 5).
+  getBounds() {
+    return this.WORLD_SIZE / 2 - 5;
+  }
+
+  _disposeAll() {
     // Dispose aim arrow separately (not in _disposables)
     if (this._aimArrow) {
       this.scene.remove(this._aimArrow);
@@ -207,8 +236,6 @@ class CourseMesh {
     this._disposables   = [];
     this.groundMesh     = null;
     this.groundGeometry = null;
-
-    this._buildCourse(style);
   }
 
   setSlope(angleDeg) {
@@ -236,7 +263,7 @@ class CourseMesh {
     // Green slope — live offset, does not touch the base array
     if (this._greenSlopeDeg !== 0) {
       const slope = Math.tan(this._greenSlopeDeg * Math.PI / 180);
-      for (const hole of HOLES) {
+      for (const hole of this._activeHoles) {
         const d = Math.sqrt((wx - hole.green[0]) ** 2 + (wz - hole.green[1]) ** 2);
         if (d < hole.gr + 4) {
           const t = 1 - smoothstep(hole.gr - 1, hole.gr + 4, d);
@@ -306,7 +333,7 @@ class CourseMesh {
 
         let tPlay = 0;
 
-        for (const hole of HOLES) {
+        for (const hole of this._activeHoles) {
           // Fairway corridor
           const df = this._distToPolyline(wx, wz, hole.path);
           tPlay = Math.max(tPlay, 1 - smoothstep(0, BLEND, Math.max(0, df - hole.fw)));
@@ -324,7 +351,7 @@ class CourseMesh {
         this.heightField[idx] *= (1 - tPlay);
 
         // Bunker depressions
-        for (const hole of HOLES) {
+        for (const hole of this._activeHoles) {
           for (const b of hole.bunkers) {
             const d = Math.sqrt((wx - b.x) ** 2 + (wz - b.z) ** 2);
             if (d < b.r) {
@@ -397,7 +424,7 @@ class CourseMesh {
 
         let surface = S.SURFACE_ROUGH;
 
-        for (const hole of HOLES) {
+        for (const hole of this._activeHoles) {
           // Fairway corridor
           const df = this._distToPolyline(wx, wz, hole.path);
           if (df <= hole.fw) surface = higher(surface, S.SURFACE_FAIRWAY);
@@ -524,7 +551,7 @@ class CourseMesh {
     // Flag colors rotate through 4 colours for visual variety
     const flagColors = [0xff2222, 0xffdd00, 0x2255ff, 0xff8800];
 
-    HOLES.forEach((hole, i) => {
+    this._activeHoles.forEach((hole, i) => {
       const [hx, hz] = hole.green;
       const gy = this.getHeightAt(hx, hz);
 
@@ -582,9 +609,10 @@ class CourseMesh {
   _buildVegetation(style) {
     const S     = CONSTANTS;
     const step  = 18;   // candidate grid spacing (metres)
+    const half  = this.WORLD_SIZE / 2 - 10;
 
-    for (let wx = -390; wx <= 390; wx += step) {
-      for (let wz = -390; wz <= 390; wz += step) {
+    for (let wx = -half; wx <= half; wx += step) {
+      for (let wz = -half; wz <= half; wz += step) {
         // Deterministic jitter so trees don't look grid-like
         const jx = wx + (noise(wx,  wz) - 0.5) * 12;
         const jz = wz + (noise(wz, -wx) - 0.5) * 12;
@@ -723,7 +751,7 @@ class CourseMesh {
   _buildBunkerVisuals(style) {
     const sandHex = style === 'heathland' ? 0xb09870 : 0xd4c878;
 
-    HOLES.forEach(hole => {
+    this._activeHoles.forEach(hole => {
       hole.bunkers.forEach(b => {
         const gy  = this.getHeightAt(b.x, b.z);
         // Organic bunker shape via noise-displaced polygon
@@ -754,7 +782,7 @@ class CourseMesh {
       color: 0x1a4f8c, roughness: 0.05, metalness: 0.15,
     });
 
-    HOLES.forEach(hole => {
+    this._activeHoles.forEach(hole => {
       if (!hole.water) return;
       const w  = hole.water;
       const gy = this.getHeightAt(w.x, w.z);
@@ -775,6 +803,60 @@ class CourseMesh {
     this._aimArrow = new THREE.ArrowHelper(dir, origin, 28, 0xff8800, 5, 2.5);
     this._aimArrow.visible = true;
     this.scene.add(this._aimArrow);
+  }
+
+  // ── Hole loading / localization ─────────────────────────────────────
+  // Transforms a hole out of the master 18-hole layout into a standalone
+  // local coordinate system: tee at (0,0), green direction aligned to +X.
+  // This lets the existing physics/camera code — which always launches
+  // from world origin along aimDeg — work unchanged for any single hole.
+
+  _findHole(holeNumber) {
+    return HOLES.find(h => h.id === holeNumber) || HOLES[0];
+  }
+
+  _localizeHole(hole) {
+    const [tx, tz] = hole.tee;
+    const [gx, gz] = hole.green;
+    const angle = Math.atan2(gz - tz, gx - tx);
+    const cos = Math.cos(-angle), sin = Math.sin(-angle);
+
+    const tf = ([wx, wz]) => {
+      const dx = wx - tx, dz = wz - tz;
+      return [dx * cos - dz * sin, dx * sin + dz * cos];
+    };
+
+    return {
+      ...hole,
+      tee:     [0, 0],
+      green:   tf(hole.green),
+      path:    hole.path.map(tf),
+      bunkers: hole.bunkers.map(b => {
+        const [lx, lz] = tf([b.x, b.z]);
+        return { x: lx, z: lz, r: b.r };
+      }),
+      water: hole.water
+        ? (([lx, lz]) => ({ x: lx, z: lz, r: hole.water.r }))(tf([hole.water.x, hole.water.z]))
+        : null,
+    };
+  }
+
+  // Sizes the map to fit the hole's full extent (tee → green, bunkers,
+  // water) plus a margin for rough/vegetation/behind-tee space.
+  _computeWorldSizeForHole(hole) {
+    let maxExtent = 0;
+    const pts = [hole.tee, hole.green, ...hole.path];
+    for (const [x, z] of pts) maxExtent = Math.max(maxExtent, Math.abs(x), Math.abs(z));
+    for (const b of hole.bunkers) {
+      maxExtent = Math.max(maxExtent, Math.abs(b.x) + b.r, Math.abs(b.z) + b.r);
+    }
+    if (hole.water) {
+      maxExtent = Math.max(maxExtent, Math.abs(hole.water.x) + hole.water.r, Math.abs(hole.water.z) + hole.water.r);
+    }
+
+    const margin = 60;
+    const size   = 2 * (maxExtent + margin);
+    return Math.max(220, Math.min(600, size));
   }
 
   // ── Geometry helpers ───────────────────────────────────────────────

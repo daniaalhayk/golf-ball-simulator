@@ -19,6 +19,7 @@ class ControlPanel {
       windSpeed:     0.0,
       windAngle:     0.0,
       // Course
+      holeNumber:    1,
       slopeAngle:    0.0,
       landscapeType: 'parkland',
       // Sim
@@ -74,6 +75,10 @@ class ControlPanel {
 
     // --- Course folder ---
     const course = this.gui.addFolder('Course');
+
+    course.add(this.params, 'holeNumber', Array.from({ length: 18 }, (_, i) => i + 1))
+      .name('Hole')
+      .onChange(() => this._onParamChange());
 
     course.add(this.params, 'landscapeType', ['parkland', 'links', 'heathland', 'desert'])
       .name('Landscape')

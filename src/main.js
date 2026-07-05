@@ -37,6 +37,7 @@ const playbackControls = new PlaybackControls();
 // ── State ─────────────────────────────────────────────────────────────
 let simMode          = 'idle';
 let _currentLandscape = 'parkland';
+let _currentHole      = 1;
 
 // ── Init ──────────────────────────────────────────────────────────────
 const { scene, camera, renderer } = sceneBuilder.init();
@@ -63,6 +64,17 @@ controlPanel.setCallbacks({
   },
 
   onParamChange: (params) => {
+    // Hole — full rebuild only when the selected hole actually changes.
+    // Each hole is its own standalone map (tee at world origin), so
+    // switching holes snaps the ball/camera back to the new tee.
+    if (params.holeNumber !== _currentHole) {
+      _currentHole = params.holeNumber;
+      courseMesh.loadHole(_currentHole);
+      physicsEngine.setTerrain(courseMesh);
+      collisionHandler.setTerrain(courseMesh);
+      _resetAll(params.aimDeg);
+    }
+
     // Wind
     const windRad = (params.windAngle * Math.PI) / 180;
     physicsEngine.setWind(
