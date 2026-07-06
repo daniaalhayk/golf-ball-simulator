@@ -25,6 +25,7 @@ class TrailRenderer {
   // ------------------------------------------------------------------
   init(scene) {
     this.scene = scene;
+    this._landingIndex = null;   // index of first non-'flying' point (true landing spot)
 
     // Pre-allocate buffer — 3 floats (x, y, z) per point
     const buffer = new Float32Array(this.maxPoints * 3);
@@ -73,6 +74,14 @@ class TrailRenderer {
     // If buffer is full, remove oldest point (sliding window)
     if (this.positions.length >= this.maxPoints) {
       this.positions.shift();
+      if (this._landingIndex !== null) this._landingIndex--;
+    }
+
+    // The first point where the ball is no longer 'flying' is the true
+    // landing spot — real golf distinguishes Carry (tee to landing) from
+    // Total (tee to final rest, after roll).
+    if (this._landingIndex === null && state.phase !== 'flying') {
+      this._landingIndex = this.positions.length;
     }
 
     // Record snapshot
@@ -120,7 +129,7 @@ class TrailRenderer {
   getStats() {
 
     if (this.positions.length < 2) {
-      return { carryDistance: 0, maxHeight: 0, lateralDeviation: 0 };
+      return { carryDistance: 0, totalDistance: 0, maxHeight: 0, lateralDeviation: 0 };
     }
 
     let maxHeight = 0;
@@ -132,18 +141,30 @@ class TrailRenderer {
     const first = this.positions[0];
     const last  = this.positions[this.positions.length - 1];
 
-    // Carry distance — horizontal distance from tee to landing
-    const carryDistance = Math.sqrt(
+    // Total distance — horizontal distance from tee to current/final position
+    const totalDistance = Math.sqrt(
       (last.x - first.x) ** 2 +
       (last.z - first.z) ** 2
     );
+
+    // Carry distance — horizontal distance from tee to the true landing
+    // spot (first point after 'flying' ends), not the post-roll position.
+    let carryDistance = totalDistance;
+    if (this._landingIndex !== null && this._landingIndex < this.positions.length) {
+      const landing = this.positions[this._landingIndex];
+      carryDistance = Math.sqrt(
+        (landing.x - first.x) ** 2 +
+        (landing.z - first.z) ** 2
+      );
+    }
 
     // Lateral deviation — how far left/right the ball finished (Z axis)
     const lateralDeviation = last.z - first.z;
 
     return {
-      carryDistance:    Math.round(carryDistance),      // m
-      maxHeight:        Math.round(maxHeight * 10) / 10, // m (1 decimal)
+      carryDistance:    Math.round(carryDistance),        // m
+      totalDistance:    Math.round(totalDistance),         // m
+      maxHeight:        Math.round(maxHeight * 10) / 10,   // m (1 decimal)
       lateralDeviation: Math.round(lateralDeviation * 10) / 10, // m
     };
 
@@ -156,6 +177,7 @@ class TrailRenderer {
   reset() {
 
     this.positions = [];
+    this._landingIndex = null;
     this.geometry.setDrawRange(0, 0);
 
     // Zero out the buffer to avoid ghost points from previous shots
