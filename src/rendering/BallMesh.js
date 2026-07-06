@@ -19,15 +19,55 @@ class BallMesh {
   }
 
   _buildBall() {
-    const geo = new THREE.SphereGeometry(CONSTANTS.RADIUS, 32, 32);
+    const geo = new THREE.SphereGeometry(CONSTANTS.RADIUS, 48, 48);
+    const bumpMap = this._createDimpleTexture();
     const mat = new THREE.MeshStandardMaterial({
       color: 0xffffff, roughness: 0.35, metalness: 0.0, envMapIntensity: 0.8,
+      bumpMap, bumpScale: 0.0006,   // real dimples are ~0.3-0.5mm deep
     });
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.castShadow    = true;
     this.mesh.receiveShadow = false;
     this.mesh.position.set(0, CONSTANTS.RADIUS, 0);
     this.scene.add(this.mesh);
+  }
+
+  // Procedural dimple pattern baked into a bump map — real golf balls have
+  // 300-500 dimples; drawing them on the sphere's own equirectangular UVs
+  // avoids downloading/licensing an external textured ball model.
+  _createDimpleTexture() {
+    const size = 512;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size / 2;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const rows = 22;
+    const dimpleR = size / rows / 2.1;
+    for (let row = 0; row < rows; row++) {
+      const y = (row + 0.5) * (canvas.height / rows);
+      const cols = Math.round(rows * 2 * Math.sin((row + 0.5) / rows * Math.PI));
+      const offset = (row % 2) * (canvas.width / cols / 2);
+      for (let col = 0; col < cols; col++) {
+        const x = offset + (col + 0.5) * (canvas.width / cols);
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, dimpleR);
+        grad.addColorStop(0,   '#4a4a4a');
+        grad.addColorStop(0.8, '#707070');
+        grad.addColorStop(1,   '#808080');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, dimpleR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    return tex;
   }
 
   _buildShadow() {
