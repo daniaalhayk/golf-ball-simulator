@@ -13,6 +13,7 @@ import CourseMesh         from './rendering/CourseMesh.js';
 import BallMesh           from './rendering/BallMesh.js';
 import TrailRenderer      from './rendering/TrailRenderer.js';
 import CameraRig          from './rendering/CameraRig.js';
+import GolferFigure       from './rendering/GolferFigure.js';
 
 import ControlPanel       from './gui/ControlPanel.js';
 import StatsOverlay       from './gui/StatsOverlay.js';
@@ -29,6 +30,7 @@ const courseMesh       = new CourseMesh();
 const ballMesh         = new BallMesh();
 const trailRenderer    = new TrailRenderer();
 const cameraRig        = new CameraRig();
+const golferFigure     = new GolferFigure();
 
 const controlPanel     = new ControlPanel();
 const statsOverlay     = new StatsOverlay();
@@ -46,6 +48,8 @@ courseMesh.init(scene);
 ballMesh.init(scene);
 trailRenderer.init(scene);
 cameraRig.init(camera, renderer.domElement);
+golferFigure.init(scene);
+golferFigure.updateAim(0);
 
 controlPanel.init();
 statsOverlay.init();
@@ -89,13 +93,25 @@ controlPanel.setCallbacks({
 
     // Aim arrow — rotates in real time as slider moves
     courseMesh.updateAimArrow(params.aimDeg);
+    golferFigure.updateAim(params.aimDeg);
 
-    // Landscape — full rebuild only when value actually changes
+    // Landscape — full rebuild only when value actually changes.
+    // 'realscan' loads a real drone-scanned mesh asynchronously; every
+    // other style rebuilds the procedural sine-wave terrain synchronously.
     if (params.landscapeType !== _currentLandscape) {
       _currentLandscape = params.landscapeType;
-      courseMesh.setLandscape(params.landscapeType);
-      physicsEngine.setTerrain(courseMesh);
-      collisionHandler.setTerrain(courseMesh);
+
+      if (params.landscapeType === 'realscan') {
+        courseMesh.loadScannedTerrain().then(() => {
+          physicsEngine.setTerrain(courseMesh);
+          collisionHandler.setTerrain(courseMesh);
+          _resetAll(params.aimDeg);
+        });
+      } else {
+        courseMesh.setLandscape(params.landscapeType);
+        physicsEngine.setTerrain(courseMesh);
+        collisionHandler.setTerrain(courseMesh);
+      }
     }
   },
 
@@ -115,10 +131,13 @@ playbackControls.onScrub = (index) => {
 };
 
 // ── Launch ────────────────────────────────────────────────────────────
+let _lastLaunchSpeed = 0;
+
 function _launch(lp) {
   physicsEngine.setWind(lp.wind.vx, lp.wind.vy, lp.wind.vz);
   collisionHandler.setSlope(lp.slopeAngle);
   courseMesh.setSlope(lp.slopeAngle);
+  _lastLaunchSpeed = lp.v0;
 
   ballState.init({
     v0:        lp.v0,
@@ -128,8 +147,9 @@ function _launch(lp) {
     aimDeg:    lp.aimDeg,
   });
 
-  // Hide aim arrow while ball is in flight
+  // Hide aim arrow and golfer while ball is in flight
   courseMesh.showAimArrow(false);
+  golferFigure.setVisible(false);
 
   recorder.start();
   simMode = 'live';
@@ -144,6 +164,8 @@ function _resetAll(aimDeg = 0) {
   statsOverlay.reset();
   playbackControls.hide();
   courseMesh.showAimArrow(true);    // aim arrow visible at rest
+  golferFigure.updateAim(aimDeg);
+  golferFigure.setVisible(true);
   simMode = 'idle';
 }
 
@@ -153,6 +175,8 @@ function _onSimulationEnd() {
   simMode = 'playback';
   playbackControls.show(recorder.totalSteps, recorder.duration());
   courseMesh.showAimArrow(true);    // aim arrow returns after ball stops
+  golferFigure.setVisible(true);
+  statsOverlay.addShotToHistory(trailRenderer.getStats(), _lastLaunchSpeed);
 }
 
 // ── Game loop ─────────────────────────────────────────────────────────
