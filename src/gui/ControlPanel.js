@@ -80,7 +80,10 @@ class ControlPanel {
       .name('Hole')
       .onChange(() => this._onParamChange());
 
-    course.add(this.params, 'landscapeType', ['parkland', 'links', 'heathland', 'desert'])
+    course.add(this.params, 'landscapeType', {
+      Parkland: 'parkland', Links: 'links', Heathland: 'heathland',
+      Desert: 'desert', 'Real Scan (drone)': 'realscan',
+    })
       .name('Landscape')
       .onChange(() => this._onParamChange());
 

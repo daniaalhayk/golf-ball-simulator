@@ -11,6 +11,14 @@
 
 import * as THREE from 'three';
 import CONSTANTS  from '../constants.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
+
+// Patch in BVH-accelerated raycasting once — used only to bake height data
+// out of the real scanned terrain mesh (see loadScannedTerrain()).
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 // ── Smoothstep ────────────────────────────────────────────────────────
 function smoothstep(e0, e1, x) {
@@ -211,6 +219,129 @@ class CourseMesh {
     this._greenSlopeDeg = 0;
     this._disposeAll();
     this._buildCourse(style);
+  }
+
+  // Loads a real-world drone-scanned terrain (glTF, CC-BY-4.0 — johnnokomis
+  // on Sketchfab) as a standalone hole instead of the procedural sine-wave
+  // landscape. Tee/green were picked by eye from the scan; the source file
+  // does not preserve real-world units, so an approximate SCALE factor is
+  // applied. Everything downstream (getHeightAt/getSurfaceAt, bounce/roll,
+  // slope) is unchanged — only the height *source* differs.
+  async loadScannedTerrain() {
+    this._disposeAll();
+    this.landscapeStyle = 'realscan';
+
+    const TEE_RAW   = [1.117, 13.96];
+    const GREEN_RAW = [5.085, -13.81];
+    const SCALE     = 6;   // approximate real-world calibration, see notes above
+
+    const dx  = GREEN_RAW[0] - TEE_RAW[0];
+    const dz  = GREEN_RAW[1] - TEE_RAW[1];
+    const angle  = Math.atan2(dz, dx);
+    const L      = Math.hypot(dx, dz) * SCALE;
+
+    const loader = new GLTFLoader();
+    const gltf   = await loader.loadAsync('/models/golf-course-scan/scene.gltf');
+    gltf.scene.traverse(obj => {
+      if (obj.isMesh) {
+        obj.geometry.computeBoundsTree();
+        if (obj.material) obj.material.side = THREE.DoubleSide;
+      }
+    });
+
+    // Sample the tee's real elevation in the model's own native space,
+    // before it gets moved, so the tee lands exactly at local Y=0.
+    this.scene.add(gltf.scene);
+    gltf.scene.updateMatrixWorld(true);
+    const probe   = new THREE.Raycaster();
+    probe.firstHitOnly = true;
+    const teeRawY = this._raycastDown(probe, gltf.scene, TEE_RAW[0], TEE_RAW[1], 100) ?? 0;
+    this.scene.remove(gltf.scene);
+
+    // Re-parent into a localized hole frame: tee → world origin,
+    // green direction → +X (same convention as procedural holes).
+    gltf.scene.position.set(-TEE_RAW[0], -teeRawY, -TEE_RAW[1]);
+    const holeRoot = new THREE.Group();
+    holeRoot.rotation.y = angle;
+    holeRoot.scale.setScalar(SCALE);
+    holeRoot.add(gltf.scene);
+    this.scene.add(holeRoot);
+    holeRoot.updateMatrixWorld(true);
+    this._disposables.push(holeRoot);
+
+    // Single synthetic hole reusing the exact procedural hole shape, so
+    // surface classification / markers / green-slope code need no changes.
+    this._activeHoles = [{
+      id: 'scan', par: 4,
+      tee: [0, 0], green: [L, 0], gr: 9, fw: 12,
+      path: [[0, 0], [L, 0]],
+      bunkers: [], water: null,
+    }];
+    this.WORLD_SIZE     = Math.min(L + 60, 260);
+    this._greenSlopeDeg = 0;
+
+    this._bakeScannedHeightField(holeRoot);
+    this._generateSurfaceField();
+
+    // No procedural ground plane — the scanned mesh itself is the visual.
+    this.groundMesh     = null;
+    this.groundGeometry = null;
+
+    this._buildHoleMarkers();
+    this._buildAimArrow();
+  }
+
+  _raycastDown(raycaster, object3D, x, z, startY) {
+    raycaster.set(new THREE.Vector3(x, startY, z), new THREE.Vector3(0, -1, 0));
+    raycaster.far = startY + 1000;
+    const hits = raycaster.intersectObject(object3D, true);
+    return hits.length ? hits[0].point.y : null;
+  }
+
+  // One-time bake: raycast straight down against the real scanned mesh
+  // and store the result in the same heightField that procedural
+  // landscapes fill with _rawHeight(). Raycasting is the expensive part
+  // (each query walks all 26 sub-meshes' BVHs), so we sample a coarse
+  // 64×64 grid — plenty for rolling-physics-scale slope — and bilinearly
+  // upsample into the full-resolution array everything else reads from.
+  // Cells that miss the mesh (the scan's real edges are ragged) fall
+  // back to the last valid sample instead of dropping to 0.
+  _bakeScannedHeightField(object3D) {
+    const BAKE_N = 64;
+    const coarse = new Float32Array(BAKE_N * BAKE_N);
+    const raycaster = new THREE.Raycaster();
+    raycaster.firstHitOnly = true;
+    const startY = 500;
+    let lastGood = 0;
+
+    for (let gz = 0; gz < BAKE_N; gz++) {
+      for (let gx = 0; gx < BAKE_N; gx++) {
+        const wx = (gx / (BAKE_N - 1) - 0.5) * this.WORLD_SIZE;
+        const wz = (gz / (BAKE_N - 1) - 0.5) * this.WORLD_SIZE;
+        const h  = this._raycastDown(raycaster, object3D, wx, wz, startY);
+        const value = h !== null ? h : lastGood;
+        coarse[gz * BAKE_N + gx] = value;
+        if (h !== null) lastGood = value;
+      }
+    }
+
+    const N = this.GRID;
+    for (let gz = 0; gz < N; gz++) {
+      for (let gx = 0; gx < N; gx++) {
+        const fx = (gx / (N - 1)) * (BAKE_N - 1);
+        const fz = (gz / (N - 1)) * (BAKE_N - 1);
+        const ix = Math.max(0, Math.min(BAKE_N - 2, Math.floor(fx)));
+        const iz = Math.max(0, Math.min(BAKE_N - 2, Math.floor(fz)));
+        const tx = fx - ix, tz = fz - iz;
+        const h00 = coarse[ iz      * BAKE_N + ix    ];
+        const h10 = coarse[ iz      * BAKE_N + ix + 1];
+        const h01 = coarse[(iz + 1) * BAKE_N + ix    ];
+        const h11 = coarse[(iz + 1) * BAKE_N + ix + 1];
+        this.heightField[gz * N + gx] =
+          h00 * (1 - tx) * (1 - tz) + h10 * tx * (1 - tz) +
+          h01 * (1 - tx) * tz       + h11 * tx * tz;
+      }
+    }
   }
 
   // Half-extent of the currently loaded map. Physics uses this for the
