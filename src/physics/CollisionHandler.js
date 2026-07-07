@@ -1,9 +1,49 @@
 // physics/CollisionHandler.js
 // Ground contact physics — two regimes:
-//   BOUNCING — Penner (2002) impact model
-//   ROLLING  — Cross (2024) extended with terrain-following + surface friction
+//   BOUNCING — rigid-sphere impulse model (normal restitution + coupled
+//              linear/angular Coulomb friction at the contact point)
+//   ROLLING  — Cross (2024)-style terrain-following roll with surface friction
 //
-// Key fixes vs previous version:
+// ── Bounce model, derived from first principles ─────────────────────────
+// The ball is a solid sphere (I = (2/5) m R²) contacting a flat surface at
+// the point r = (0, -R, 0) relative to its center. Two things happen at
+// impact:
+//   1. Normal direction (Y): velocity reverses and shrinks by the
+//      speed-dependent restitution coefficient e (Penner 2002).
+//   2. Tangential plane (X-Z): a friction impulse acts at the contact
+//      point. That impulse simultaneously changes the ball's horizontal
+//      velocity AND its spin — they are not independent. An earlier
+//      version got this wrong: it computed a physically-derived Δv from
+//      a Penner-style formula, then separately multiplied spin by an
+//      arbitrary constant (0.6) unrelated to the friction impulse that
+//      had just been applied — breaking conservation of angular momentum
+//      at the contact point.
+//
+// Contact-point (slip) velocity, from v_contact = v_center + ω × r with
+// r = (0, -R, 0):
+//   slip_x = vx + R·wz
+//   slip_z = vz - R·wx
+// (wy — spin about the vertical/normal axis, i.e. hook/slice spin — has
+//  zero moment arm at this contact point for a point-contact sphere, so
+//  it is not coupled to the translational bounce kick in this model. Real
+//  turf interaction isn't a true point contact, so a small empirical
+//  decay is still applied to wy below, but we don't invent a
+//  translational coupling that rigid-body contact mechanics doesn't
+//  support.)
+//
+// Two friction regimes, exactly as in real ball bounces:
+//   (a) Kinetic/sliding — the ball skids throughout contact. Friction
+//       force = μ·N, opposing the slip vector.
+//   (b) Static/rolling  — friction is strong enough (relative to μ·N) to
+//       kill the slip entirely before separation, so the ball leaves the
+//       ground rolling without slipping at the contact point.
+// Which regime applies is decided by comparing the friction impulse that
+// *would* be needed to zero the slip against the Coulomb limit μ·N.
+//
+// Both branches update vx, vz, wx, wz together from the same impulse, so
+// spin and translation always change consistently with each other.
+//
+// ── Roll phase key fixes vs an earlier version ──────────────────────────
 //   1. groundY sampled AFTER position update (no one-step lag)
 //   2. Correct slope physics: friction = mu * g * cos(θ), not mu * g
 //   3. Speed clamped in rough/sand — prevents downhill runaway
@@ -31,43 +71,73 @@ class CollisionHandler {
     else if (state.phase === 'rolling')  this._roll(state);
   }
 
-  // ── Bounce — Penner (2002) ─────────────────────────────────────────
+  // ── Bounce — coupled linear/angular impulse model ──────────────────
   _bounce(state) {
-    const viy    = state.vy;
-    const vix    = state.vx;
-    const absViy = Math.abs(viy);
+    const R = CONSTANTS.RADIUS;
+    const absViy = Math.abs(state.vy);
 
-    // Variable restitution (Penner p.933)
+    // 1. Normal restitution (Penner 2002, speed-dependent) — unchanged.
     let e = absViy <= 20
-      ? CONSTANTS.RESTITUTION_A - CONSTANTS.RESTITUTION_B * absViy + CONSTANTS.RESTITUTION_C * absViy ** 2
+      ? CONSTANTS.RESTITUTION_A - CONSTANTS.RESTITUTION_B * absViy + CONSTANTS.RESTITUTION_C * (absViy ** 2)
       : CONSTANTS.RESTITUTION_MIN;
     e = Math.max(0, Math.min(1, e));
+    state.vy = e * absViy;
 
-    const vry = e * absViy;
+    // 2. Slip velocity at the contact point (tangential plane).
+    const slipX = state.vx + R * state.wz;
+    const slipZ = state.vz - R * state.wx;
+    const slipMag = Math.sqrt(slipX * slipX + slipZ * slipZ);
 
-    // Sliding / rolling transition at impact (Penner p.933)
-    const mu_c = (2 / 7) * (vix + CONSTANTS.RADIUS * state.wz) / (absViy * (1 + e));
-    let vrx;
-    if (Math.abs(mu_c) > CONSTANTS.MU_FRICTION) {
-      vrx = vix - Math.sign(vix) * CONSTANTS.MU_FRICTION * absViy * (1 + e);
+    // Normal impulse (per unit mass — mass cancels out of every
+    // velocity/spin update below, so we work directly in impulse/mass).
+    const Jn = absViy * (1 + e);
+    const frictionLimit = CONSTANTS.MU_FRICTION * Jn;
+
+    // Required tangential impulse/mass to bring slip to exactly zero
+    // (derived from Δv = J/m, Δω = 5J/(2mR) for I = (2/5)mR², requiring
+    // slip_x' = slip_z' = 0 at separation): |J_required|/m = (2/7)·|slip|
+    const requiredImpulse = (2 / 7) * slipMag;
+
+    if (requiredImpulse <= frictionLimit || slipMag < 1e-6) {
+      // (a) ROLLING regime — static friction fully arrests the slip.
+      state.vx = state.vx - (2 / 7) * slipX;
+      state.vz = state.vz - (2 / 7) * slipZ;
+      state.wz = state.wz - (5 / (7 * R)) * slipX;
+      state.wx = state.wx + (5 / (7 * R)) * slipZ;
     } else {
-      vrx = (5 / 7) * vix - (2 / 7) * CONSTANTS.RADIUS * state.wz;
+      // (b) SLIDING regime — kinetic friction acts at the Coulomb limit,
+      // opposing the slip direction, for the whole contact.
+      const ux = slipX / slipMag;
+      const uz = slipZ / slipMag;
+      const Jx = -frictionLimit * ux;
+      const Jz = -frictionLimit * uz;
+
+      state.vx += Jx;
+      state.vz += Jz;
+      state.wz += (5 / (2 * R)) * Jx;
+      state.wx -= (5 / (2 * R)) * Jz;
     }
 
-    state.vx  = vrx;
-    state.vy  = vry;
-    state.vz *= (1 - CONSTANTS.MU_FRICTION);
-    state.wz *= 0.6;
-    state.wy *= 0.6;
+    // 3. Vertical/hook-slice spin (wy) isn't coupled to translation at
+    // this contact point (see header note) — apply only a mild empirical
+    // decay for real turf contact-patch losses, instead of the flat 0.6
+    // that used to be applied to all three axes indiscriminately.
+    state.wy *= 0.85;
 
     const groundY = this.terrain ? this.terrain.getHeightAt(state.x, state.z) : 0;
 
-    if (vry < 0.5 || (state.y - groundY) < CONSTANTS.ROLL_THRESHOLD) {
-      state.vy            = 0;
-      state.y             = groundY;
-      state.phase         = 'rolling';
-      this._rollStartTime = state.time;   // record when rolling begins
+    // 4. Regime transition: once vertical rebound speed drops below
+    // threshold, treat subsequent contact as continuous rolling rather
+    // than simulating a string of ever-smaller bounces.
+    // state.y is the ball's ground-contact height (not its rendered
+    // center) — BallMesh/TrailRenderer add the visual radius on top.
+    if (state.vy < 0.5 || (state.y - groundY) < CONSTANTS.ROLL_THRESHOLD) {
+      state.vy             = 0;
+      state.y              = groundY;
+      state.phase          = 'rolling';
+      this._rollStartTime  = state.time;
     } else {
+      state.y     = groundY;
       state.phase = 'flying';
     }
   }
