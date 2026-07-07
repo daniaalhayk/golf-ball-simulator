@@ -5,6 +5,19 @@
 // on every landscape, including the real scanned terrain.
 
 import * as THREE from 'three';
+import { VISUAL_RADIUS } from './BallMesh.js';
+
+// Distance from the golfer's spine to the ball, in the golfer's own local
+// +Z direction. ~1.0 m matches a real address stance and keeps the body
+// clear of the tee marker's 0.5 m radius circle (0.62 m overlapped it).
+const STAND_DISTANCE = 1.0;
+
+// The clubhead should sit flush against the ball's near side (touching,
+// not through its center, but not floating off to the side either).
+// clubHead is 0.14 m deep (half = 0.07); pulling the ground-contact point
+// back by radius + half-depth puts the clubhead's front face exactly at
+// the ball's surface.
+const CLUB_GROUND_Z = STAND_DISTANCE - VISUAL_RADIUS - 0.07;
 
 class GolferFigure {
 
@@ -52,9 +65,12 @@ class GolferFigure {
     const capMesh = new THREE.Mesh(capGeo, cap);
     capMesh.position.set(0, 1.645, 0.10);
 
-    // Arms — angled down/forward to the grip point (address posture)
+    // Arms — angled down/forward to the grip point (address posture).
+    // Grip sits roughly waist-high, most of the way from spine to ball.
+    // X stays 0 (no forward/back bias) so the club lines up exactly with
+    // the ball instead of appearing to stand slightly ahead of it.
     const armGeo = new THREE.CylinderGeometry(0.05, 0.06, 0.62, 8);
-    const gripPoint = new THREE.Vector3(0.05, 0.78, 0.32);
+    const gripPoint = new THREE.Vector3(0, 0.80, CLUB_GROUND_Z * 0.62);
 
     const armL = new THREE.Mesh(armGeo, shirt);
     armL.position.set((-0.16 + gripPoint.x) / 2, (1.35 + gripPoint.y) / 2, (0.05 + gripPoint.z) / 2);
@@ -66,9 +82,10 @@ class GolferFigure {
     armR.lookAt(gripPoint.x, gripPoint.y, gripPoint.z);
     armR.rotateX(Math.PI / 2);
 
-    // Club — shaft from the grip down to the ground near the ball,
-    // clubhead resting on the turf.
-    const groundPoint = new THREE.Vector3(0.05, 0.0, 0.62);
+    // Club — shaft from the grip down to the ground beside the ball,
+    // clubhead resting on the turf just short of the ball's near side
+    // (not driven through its center — see CLUB_GROUND_Z above).
+    const groundPoint = new THREE.Vector3(0, 0.0, CLUB_GROUND_Z);
     const shaftLen = gripPoint.distanceTo(groundPoint);
     const shaftGeo = new THREE.CylinderGeometry(0.012, 0.012, shaftLen, 8);
     const shaft = new THREE.Mesh(shaftGeo, club);
@@ -93,13 +110,16 @@ class GolferFigure {
   }
 
   // Faces the golfer toward the aim direction and stands them beside the
-  // ball (real golfers address the ball from the side, not standing on it).
+  // ball (real golfers address the ball from the side, not standing on
+  // it). The stance offset must use the exact same rotation as the body
+  // itself (-rad) — using the opposite sign only happened to cancel out
+  // at aimDeg=0 and pointed the club away from the ball at any other angle.
   updateAim(aimDeg) {
     if (!this.group) return;
     const rad = (aimDeg * Math.PI) / 180;
     this.group.rotation.y = -rad;
-    const sideOffset = new THREE.Vector3(0, 0, -0.62).applyAxisAngle(new THREE.Vector3(0, 1, 0), rad);
-    this.group.position.set(sideOffset.x, 0, sideOffset.z);
+    const offset = new THREE.Vector3(0, 0, -STAND_DISTANCE).applyAxisAngle(new THREE.Vector3(0, 1, 0), -rad);
+    this.group.position.set(offset.x, 0, offset.z);
   }
 
   setVisible(visible) {

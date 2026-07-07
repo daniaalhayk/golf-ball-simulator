@@ -5,7 +5,7 @@
 // Imports: Three.js only.
 
 import * as THREE from 'three';
-import CONSTANTS from '../constants.js';
+import { VISUAL_RADIUS } from './BallMesh.js';
 
 class TrailRenderer {
 
@@ -87,7 +87,7 @@ class TrailRenderer {
     // Record snapshot
     this.positions.push({
       x: state.x,
-      y: state.y + CONSTANTS.RADIUS,   // match ball mesh height offset
+      y: state.y + VISUAL_RADIUS,   // match ball mesh's rendered (exaggerated) height offset
       z: state.z,
     });
 

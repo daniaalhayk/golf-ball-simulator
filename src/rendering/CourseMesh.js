@@ -11,6 +11,7 @@
 
 import * as THREE from 'three';
 import CONSTANTS  from '../constants.js';
+import { VISUAL_RADIUS } from './BallMesh.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
@@ -930,7 +931,10 @@ class CourseMesh {
 
   _buildAimArrow() {
     const dir    = new THREE.Vector3(1, 0, 0);
-    const origin = new THREE.Vector3(0, 0.15, 0);
+    // Height matches the ball's rendered center — was a fixed 0.15 m tuned
+    // for the true (tiny) physics radius, so it cut across the top of the
+    // now much larger visual ball instead of through its middle.
+    const origin = new THREE.Vector3(0, VISUAL_RADIUS, 0);
     this._aimArrow = new THREE.ArrowHelper(dir, origin, 28, 0xff8800, 5, 2.5);
     this._aimArrow.visible = true;
     this.scene.add(this._aimArrow);
