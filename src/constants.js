@@ -14,12 +14,17 @@ const CONSTANTS = Object.freeze({
   RESTITUTION_C:   0.000903,
   RESTITUTION_MIN: 0.120,
   ROLL_THRESHOLD:  0.005,
-  MU_ROLL_GREEN:   0.025,
-  MU_ROLL_FRINGE:  0.055,
-  MU_ROLL_FAIRWAY: 0.065,
-  MU_ROLL_TEE:     0.080,
-  MU_ROLL_ROUGH:   0.200,
-  MU_ROLL_SAND:    0.450,
+  // Rolling-resistance coefficients, tuned to realistic golf roll-out
+  // distances (roll ≈ 10-25% of carry on fairway, not 60%+). The previous
+  // values (e.g. 0.065 for fairway) were far below published rolling
+  // friction figures for turf and let the ball roll for tens of extra
+  // metres without meaningfully slowing down.
+  MU_ROLL_GREEN:   0.10,
+  MU_ROLL_FRINGE:  0.14,
+  MU_ROLL_FAIRWAY: 0.19,
+  MU_ROLL_TEE:     0.19,
+  MU_ROLL_ROUGH:   0.32,
+  MU_ROLL_SAND:    0.50,
   MU_ROLL_WATER:   1.000,
   SURFACE_ROUGH:   0,
   SURFACE_FAIRWAY: 1,
