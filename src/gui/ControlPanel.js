@@ -24,11 +24,13 @@ class ControlPanel {
       landscapeType: 'parkland',
       // Sim
       showTrail:     true,
+      showForces:    true,
     };
 
-    this.onLaunch      = null;
-    this.onParamChange = null;
-    this.onTrailToggle = null;
+    this.onLaunch       = null;
+    this.onParamChange  = null;
+    this.onTrailToggle  = null;
+    this.onForcesToggle = null;
   }
 
   init() {
@@ -80,10 +82,7 @@ class ControlPanel {
       .name('Hole')
       .onChange(() => this._onParamChange());
 
-    course.add(this.params, 'landscapeType', {
-      Parkland: 'parkland', Links: 'links', Heathland: 'heathland',
-      Desert: 'desert', 'Real Scan (drone)': 'realscan',
-    })
+    course.add(this.params, 'landscapeType', ['parkland', 'links', 'heathland', 'desert'])
       .name('Landscape')
       .onChange(() => this._onParamChange());
 
@@ -98,6 +97,9 @@ class ControlPanel {
     sim.add(this.params, 'showTrail')
       .name('Show Trail')
       .onChange((v) => { if (this.onTrailToggle) this.onTrailToggle(v); });
+    sim.add(this.params, 'showForces')
+      .name('Show Force Arrows')
+      .onChange((v) => { if (this.onForcesToggle) this.onForcesToggle(v); });
     sim.open();
 
     // Launch button
@@ -130,10 +132,11 @@ class ControlPanel {
     if (this.onParamChange) this.onParamChange(this.params);
   }
 
-  setCallbacks({ onLaunch, onParamChange, onTrailToggle }) {
-    this.onLaunch      = onLaunch;
-    this.onParamChange = onParamChange;
-    this.onTrailToggle = onTrailToggle;
+  setCallbacks({ onLaunch, onParamChange, onTrailToggle, onForcesToggle }) {
+    this.onLaunch       = onLaunch;
+    this.onParamChange  = onParamChange;
+    this.onTrailToggle  = onTrailToggle;
+    this.onForcesToggle = onForcesToggle;
   }
 
 }

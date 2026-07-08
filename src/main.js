@@ -13,11 +13,12 @@ import CourseMesh         from './rendering/CourseMesh.js';
 import BallMesh           from './rendering/BallMesh.js';
 import TrailRenderer      from './rendering/TrailRenderer.js';
 import CameraRig          from './rendering/CameraRig.js';
-import GolferFigure       from './rendering/GolferFigure.js';
+import ForceArrows        from './rendering/ForceArrows.js';
 
-import ControlPanel       from './gui/ControlPanel.js';
-import StatsOverlay       from './gui/StatsOverlay.js';
-import PlaybackControls   from './gui/PlaybackControls.js';
+import ControlPanel          from './gui/ControlPanel.js';
+import StatsOverlay          from './gui/StatsOverlay.js';
+import PlaybackControls      from './gui/PlaybackControls.js';
+import ForceKinematicsPanel  from './gui/ForceKinematicsPanel.js';
 
 // ── Instances ────────────────────────────────────────────────────────
 const ballState        = new BallState();
@@ -30,11 +31,12 @@ const courseMesh       = new CourseMesh();
 const ballMesh         = new BallMesh();
 const trailRenderer    = new TrailRenderer();
 const cameraRig        = new CameraRig();
-const golferFigure     = new GolferFigure();
+const forceArrows      = new ForceArrows();
 
-const controlPanel     = new ControlPanel();
-const statsOverlay     = new StatsOverlay();
-const playbackControls = new PlaybackControls();
+const controlPanel        = new ControlPanel();
+const statsOverlay        = new StatsOverlay();
+const playbackControls    = new PlaybackControls();
+const forceKinematicsPanel = new ForceKinematicsPanel();
 
 // ── State ─────────────────────────────────────────────────────────────
 let simMode          = 'idle';
@@ -48,12 +50,12 @@ courseMesh.init(scene);
 ballMesh.init(scene);
 trailRenderer.init(scene);
 cameraRig.init(camera, renderer.domElement);
-golferFigure.init(scene);
-golferFigure.updateAim(0);
+forceArrows.init(scene);
 
 controlPanel.init();
 statsOverlay.init();
 playbackControls.init();
+forceKinematicsPanel.init();
 
 // Wire terrain sampler into physics (both read getHeightAt / getSurfaceAt)
 physicsEngine.setTerrain(courseMesh);
@@ -93,30 +95,23 @@ controlPanel.setCallbacks({
 
     // Aim arrow — rotates in real time as slider moves
     courseMesh.updateAimArrow(params.aimDeg);
-    golferFigure.updateAim(params.aimDeg);
 
-    // Landscape — full rebuild only when value actually changes.
-    // 'realscan' loads a real drone-scanned mesh asynchronously; every
-    // other style rebuilds the procedural sine-wave terrain synchronously.
+    // Landscape — full rebuild only when value actually changes
     if (params.landscapeType !== _currentLandscape) {
       _currentLandscape = params.landscapeType;
-
-      if (params.landscapeType === 'realscan') {
-        courseMesh.loadScannedTerrain().then(() => {
-          physicsEngine.setTerrain(courseMesh);
-          collisionHandler.setTerrain(courseMesh);
-          _resetAll(params.aimDeg);
-        });
-      } else {
-        courseMesh.setLandscape(params.landscapeType);
-        physicsEngine.setTerrain(courseMesh);
-        collisionHandler.setTerrain(courseMesh);
-      }
+      courseMesh.setLandscape(params.landscapeType);
+      physicsEngine.setTerrain(courseMesh);
+      collisionHandler.setTerrain(courseMesh);
     }
   },
 
   onTrailToggle: (visible) => {
     trailRenderer.line.visible = visible;
+  },
+
+  onForcesToggle: (visible) => {
+    if (visible) { forceArrows.show(); forceKinematicsPanel.show(); }
+    else         { forceArrows.hide(); forceKinematicsPanel.hide(); }
   },
 
 });
@@ -128,16 +123,16 @@ playbackControls.onScrub = (index) => {
   ballMesh.sync(snap);
   cameraRig.update(snap);
   statsOverlay.update(snap, trailRenderer.getStats());
+
+  const forces = forceArrows.update(snap, physicsEngine.wind);
+  forceKinematicsPanel.updateReplay(snap, forces, recorder, physicsEngine.wind);
 };
 
 // ── Launch ────────────────────────────────────────────────────────────
-let _lastLaunchSpeed = 0;
-
 function _launch(lp) {
   physicsEngine.setWind(lp.wind.vx, lp.wind.vy, lp.wind.vz);
   collisionHandler.setSlope(lp.slopeAngle);
   courseMesh.setSlope(lp.slopeAngle);
-  _lastLaunchSpeed = lp.v0;
 
   ballState.init({
     v0:        lp.v0,
@@ -147,9 +142,8 @@ function _launch(lp) {
     aimDeg:    lp.aimDeg,
   });
 
-  // Hide aim arrow and golfer while ball is in flight
+  // Hide aim arrow while ball is in flight
   courseMesh.showAimArrow(false);
-  golferFigure.setVisible(false);
 
   recorder.start();
   simMode = 'live';
@@ -162,10 +156,9 @@ function _resetAll(aimDeg = 0) {
   trailRenderer.reset();
   cameraRig.reset(aimDeg);          // camera snaps behind aim direction
   statsOverlay.reset();
+  forceKinematicsPanel.reset();
   playbackControls.hide();
   courseMesh.showAimArrow(true);    // aim arrow visible at rest
-  golferFigure.updateAim(aimDeg);
-  golferFigure.setVisible(true);
   simMode = 'idle';
 }
 
@@ -175,8 +168,6 @@ function _onSimulationEnd() {
   simMode = 'playback';
   playbackControls.show(recorder.totalSteps, recorder.duration());
   courseMesh.showAimArrow(true);    // aim arrow returns after ball stops
-  golferFigure.setVisible(true);
-  statsOverlay.addShotToHistory(trailRenderer.getStats(), _lastLaunchSpeed);
 }
 
 // ── Game loop ─────────────────────────────────────────────────────────
@@ -192,25 +183,28 @@ function gameLoop(timestamp) {
   if (simMode === 'live') {
 
     if (ballState.phase === 'flying') {
-      // Flying: fixed-timestep accumulator — 100 Hz physics, any frame rate
       let acc = dt;
       while (acc >= CONSTANTS.FIXED_DT) {
         physicsEngine.step(ballState);
+        
+        // تحديث الزمن هنا (مرة واحدة لكل خطوة فيزيائية)
+        ballState.time += CONSTANTS.FIXED_DT; 
+
         acc -= CONSTANTS.FIXED_DT;
         recorder.record(ballState);
         if (ballState.phase !== 'flying') break;
       }
 
     } else if (ballState.phase === 'bouncing' || ballState.phase === 'rolling') {
-      // Bouncing/rolling: same accumulator so rolling also runs at 100 Hz.
-      // Without this, _roll() would advance 0.01 s per frame (0.016 s) —
-      // the ball would roll at 60% real-time speed and stopping would lag.
       let acc = dt;
       while (acc >= CONSTANTS.FIXED_DT) {
         collisionHandler.handle(ballState);
+        
+        // تحديث الزمن هنا أيضاً أثناء الارتداد والدحرجة
+        ballState.time += CONSTANTS.FIXED_DT; 
+
         acc -= CONSTANTS.FIXED_DT;
         recorder.record(ballState);
-        // Break if physics ended this phase (stopped or returned to flying)
         if (ballState.phase !== 'bouncing' && ballState.phase !== 'rolling') break;
       }
     }
@@ -219,9 +213,12 @@ function gameLoop(timestamp) {
       trailRenderer.record(ballState);
     }
 
-    ballMesh.sync(ballState);
+    ballMesh.sync(ballState, dt);
     cameraRig.update(ballState);
     statsOverlay.update(ballState, trailRenderer.getStats());
+
+    const forces = forceArrows.update(ballState, physicsEngine.wind);
+    forceKinematicsPanel.updateLive(ballState, forces);
 
     if (ballState.phase === 'stopped' && recorder.recording) {
       _onSimulationEnd();

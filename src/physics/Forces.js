@@ -36,7 +36,7 @@ export function drag(state, wind = { vx: 0, vy: 0, vz: 0 }) {
   const vrel = Math.sqrt(vrx ** 2 + vry ** 2 + vrz ** 2);
 
   // Guard: no drag if ball is stationary
-  if (vrel === 0) return { fx: 0, fy: 0, fz: 0 };
+  if (vrel < 0.01) return { fx: 0, fy: 0, fz: 0 };
 
   const k = 0.5 * CONSTANTS.CD * CONSTANTS.AIR_DENSITY * CONSTANTS.AREA * vrel;
 
@@ -70,7 +70,6 @@ export function drag(state, wind = { vx: 0, vy: 0, vz: 0 }) {
 // Returns: { fx, fy, fz }
 // ------------------------------------------------------------------
 export function magnus(state, wind = { vx: 0, vy: 0, vz: 0 }) {
-  const { wx, wy, wz } = state;
   const S = CONSTANTS.MAGNUS_S;
 
   // Relative velocity components — paper Eq.9
@@ -79,9 +78,9 @@ export function magnus(state, wind = { vx: 0, vy: 0, vz: 0 }) {
   const vrz = state.vz - wind.vz;
 
   return {
-    fx: S * (wy * vrz - wz * vry),
-    fy: S * (wz * vrx - wx * vrz),
-    fz: S * (wx * vry - wy * vrx),
+    fx: S * (state.wy * vrz - state.wz * vry),
+    fy: S * (state.wz * vrx - state.wx * vrz),
+    fz: S * (state.wx * vry - state.wy * vrx),
   };
 }
 

@@ -85,32 +85,6 @@ class StatsOverlay {
         text-transform: uppercase;
         letter-spacing: 0.08em;
       }
-
-      #shot-history {
-        position:        fixed;
-        bottom:           20px;
-        left:             260px;
-        background:       rgba(0, 0, 0, 0.65);
-        color:            #ffffff;
-        font-family:      monospace;
-        font-size:        12px;
-        padding:          14px 18px;
-        border-radius:    8px;
-        border:           1px solid rgba(255, 255, 255, 0.15);
-        backdrop-filter:  blur(6px);
-        min-width:        280px;
-        pointer-events:   none;
-        z-index:          999;
-      }
-
-      #shot-history table { border-collapse: collapse; width: 100%; }
-      #shot-history th {
-        text-align: right; font-weight: normal; font-size: 11px;
-        color: rgba(255,255,255,0.5); padding-bottom: 4px;
-      }
-      #shot-history th:first-child, #shot-history td:first-child { text-align: left; }
-      #shot-history td { text-align: right; padding: 2px 0; }
-      #shot-history tr.best td { color: #ffdd00; font-weight: bold; }
     `;
     document.head.appendChild(style);
 
@@ -123,13 +97,8 @@ class StatsOverlay {
       <div class="stat-title">Flight Statistics</div>
 
       <div class="stat-row">
-        <span class="stat-label">Total Distance</span>
-        <span class="stat-value highlight" id="stat-total">0 m</span>
-      </div>
-
-      <div class="stat-row">
         <span class="stat-label">Carry Distance</span>
-        <span class="stat-value" id="stat-carry">0 m</span>
+        <span class="stat-value highlight" id="stat-carry">0 m</span>
       </div>
 
       <div class="stat-row">
@@ -162,24 +131,8 @@ class StatsOverlay {
 
     document.body.appendChild(this.container);
 
-    // --- Shot history panel ---
-    this.historyContainer = document.createElement('div');
-    this.historyContainer.id = 'shot-history';
-    this.historyContainer.innerHTML = `
-      <div class="stat-title">Shot History</div>
-      <table>
-        <thead><tr><th>#</th><th>Total</th><th>Carry</th><th>Speed</th></tr></thead>
-        <tbody id="shot-history-body">
-          <tr><td colspan="4" style="text-align:center; color:rgba(255,255,255,0.4);">no shots yet</td></tr>
-        </tbody>
-      </table>
-    `;
-    document.body.appendChild(this.historyContainer);
-    this.shots = [];
-
     // --- Cache DOM references for fast per-frame updates ---
     this.elements = {
-      total:   document.getElementById('stat-total'),
       carry:   document.getElementById('stat-carry'),
       height:  document.getElementById('stat-height'),
       lateral: document.getElementById('stat-lateral'),
@@ -189,30 +142,6 @@ class StatsOverlay {
       phase:   document.getElementById('stat-phase'),
     };
 
-  }
-
-  // ------------------------------------------------------------------
-  // addShotToHistory()
-  // Called by main.js once a shot has fully stopped. Keeps the last 8
-  // shots, newest first, and highlights the longest Total distance.
-  // ------------------------------------------------------------------
-  addShotToHistory(trailStats, ballSpeed) {
-    this.shots.unshift({
-      total: trailStats.totalDistance,
-      carry: trailStats.carryDistance,
-      speed: ballSpeed,
-    });
-    if (this.shots.length > 8) this.shots.length = 8;
-
-    const bestTotal = Math.max(...this.shots.map(s => s.total));
-    const body = document.getElementById('shot-history-body');
-    body.innerHTML = this.shots.map((s, i) => {
-      const shotNum = this.shots.length - i;
-      const isBest  = s.total === bestTotal;
-      return `<tr class="${isBest ? 'best' : ''}">
-        <td>${shotNum}</td><td>${s.total} m</td><td>${s.carry} m</td><td>${s.speed.toFixed(1)}</td>
-      </tr>`;
-    }).join('');
   }
 
   // ------------------------------------------------------------------
@@ -239,7 +168,6 @@ class StatsOverlay {
     this.elements.phase.textContent    = state.phase;
 
     // Trajectory stats — from TrailRenderer.getStats()
-    this.elements.total.textContent   = trailStats.totalDistance    + ' m';
     this.elements.carry.textContent   = trailStats.carryDistance    + ' m';
     this.elements.height.textContent  = trailStats.maxHeight        + ' m';
     this.elements.lateral.textContent = trailStats.lateralDeviation + ' m';
@@ -277,7 +205,6 @@ class StatsOverlay {
   // Clears all displayed values. Called before each new launch.
   // ------------------------------------------------------------------
   reset() {
-    this.elements.total.textContent    = '0 m';
     this.elements.carry.textContent    = '0 m';
     this.elements.height.textContent   = '0 m';
     this.elements.lateral.textContent  = '0 m';

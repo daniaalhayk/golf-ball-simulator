@@ -4,21 +4,13 @@
 import * as THREE from 'three';
 import CONSTANTS from '../constants.js';
 
-// The ball's true physics radius (0.02133 m) is barely a few pixels on
-// screen at golf-course scale — good for accurate drag/spin physics, bad
-// for actually seeing the ball. Rendering uses an exaggerated radius;
-// every physics calculation (drag area, spin-to-roll, etc.) keeps using
-// CONSTANTS.RADIUS untouched. Exported so other rendering modules
-// (aim arrow height, trail height, golfer's club) can line up with the
-// ball's actual on-screen size instead of assuming the true tiny radius.
-export const VISUAL_RADIUS = CONSTANTS.RADIUS * 3.5;
-
 class BallMesh {
 
   constructor() {
     this.mesh       = null;
     this.shadowMesh = null;
     this.scene      = null;
+    this._spinAxis  = new THREE.Vector3(); // reused each frame, avoid GC churn
   }
 
   init(scene) {
@@ -28,64 +20,86 @@ class BallMesh {
   }
 
   _buildBall() {
-    const geo = new THREE.SphereGeometry(VISUAL_RADIUS, 48, 48);
-    this._applyDimples(geo, VISUAL_RADIUS);
+    // Higher segment count than a plain display sphere needs, because the
+    // dimples are real vertex displacement, not a texture — enough vertex
+    // density is what makes each dimple read as an actual little crater
+    // instead of a faceted blob.
+    const geo = new THREE.SphereGeometry(CONSTANTS.RADIUS, 64, 64);
+    this._applyDimples(geo, CONSTANTS.RADIUS);
+
     const mat = new THREE.MeshStandardMaterial({
       color: 0xffffff, roughness: 0.35, metalness: 0.0, envMapIntensity: 0.8,
     });
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.castShadow    = true;
     this.mesh.receiveShadow = false;
-    this.mesh.position.set(0, VISUAL_RADIUS, 0);
+    this.mesh.position.set(0, CONSTANTS.RADIUS, 0);
     this.scene.add(this.mesh);
   }
 
-  // Real geometric dimples (vertex displacement), not a bump map — a bump
-  // map only fakes shading and was nearly invisible except under exactly
-  // the right light angle. Displacing actual vertices reads as dimples
-  // from any angle/lighting, same as the real 300-500 dimples on a ball.
-  // Centers are placed with a Fibonacci-sphere distribution for even
-  // coverage (no pole clustering/gaps like a naive lat/long grid gives).
+  // ------------------------------------------------------------------
+  // _applyDimples()
+  // Real geometric dimples (vertex displacement), not a bump/normal map
+  // — a texture-based fake only reads correctly under one narrow light
+  // angle. Displacing actual vertices reads as dimples from any camera
+  // angle or lighting, same as the ~330 physical dimples on a real ball.
+  //
+  // Centers are placed with a Fibonacci-sphere distribution (golden-angle
+  // spiral) so coverage is even across the whole sphere — a naive
+  // latitude/longitude grid clusters points at the poles and leaves gaps
+  // near the equator.
+  //
+  // Each dimple is a smooth cosine-profile bowl (0 depth at its rim,
+  // full depth at its center) rather than a hard-edged crater, so
+  // neighboring dimples blend the way real manufactured dimples do
+  // instead of showing visible seams.
+  // ------------------------------------------------------------------
   _applyDimples(geometry, radius) {
-    const DIMPLE_COUNT = 330;
-    const DIMPLE_ANGLE  = 0.10;           // angular radius of each dimple (rad)
-    const DIMPLE_DEPTH  = radius * 0.05;  // ~5% of radius — clearly visible
+    const DIMPLE_COUNT = 330;             // real golf balls run ~300-500
+    const DIMPLE_ANGLE = 0.11;            // angular radius of each dimple (rad)
+    const DIMPLE_DEPTH = radius * 0.045;  // ~4.5% of radius — visible, not cartoonish
 
+    // Fibonacci-sphere distribution of dimple centers (unit vectors).
     const centers = [];
-    const golden = Math.PI * (3 - Math.sqrt(5));
+    const golden  = Math.PI * (3 - Math.sqrt(5));
     for (let i = 0; i < DIMPLE_COUNT; i++) {
-      const y = 1 - (i / (DIMPLE_COUNT - 1)) * 2;
-      const r = Math.sqrt(Math.max(0, 1 - y * y));
+      const y     = 1 - (i / (DIMPLE_COUNT - 1)) * 2;
+      const r     = Math.sqrt(Math.max(0, 1 - y * y));
       const theta = golden * i;
       centers.push(new THREE.Vector3(Math.cos(theta) * r, y, Math.sin(theta) * r));
     }
 
     const pos = geometry.attributes.position;
-    const v = new THREE.Vector3();
+    const v   = new THREE.Vector3();
+
     for (let i = 0; i < pos.count; i++) {
       v.fromBufferAttribute(pos, i).normalize();
 
+      // Nearest dimple center for this vertex.
       let minAngle = Infinity;
       for (const c of centers) {
         const angle = v.angleTo(c);
         if (angle < minAngle) minAngle = angle;
-        if (minAngle < 1e-6) break;
       }
 
-      let r = radius;
       if (minAngle < DIMPLE_ANGLE) {
-        const t = 1 - minAngle / DIMPLE_ANGLE;              // 1 at center, 0 at rim
-        r -= DIMPLE_DEPTH * (t * t * (3 - 2 * t));           // smoothstep falloff
+        // Cosine bowl: 1.0 at the dimple's own center, 0.0 at its rim.
+        const t     = minAngle / DIMPLE_ANGLE;
+        const bowl  = 0.5 * (1 + Math.cos(t * Math.PI));
+        const depth = DIMPLE_DEPTH * bowl;
+        const newR  = radius - depth;
+        pos.setXYZ(i, v.x * newR, v.y * newR, v.z * newR);
       }
-      pos.setXYZ(i, v.x * r, v.y * r, v.z * r);
     }
 
     pos.needsUpdate = true;
-    geometry.computeVertexNormals();
+    geometry.computeVertexNormals(); // required after displacing vertices,
+                                      // or lighting will still shade the
+                                      // original smooth sphere
   }
 
   _buildShadow() {
-    const geo = new THREE.CircleGeometry(VISUAL_RADIUS * 2.2, 16);
+    const geo = new THREE.CircleGeometry(CONSTANTS.RADIUS * 3, 16);
     const mat = new THREE.MeshBasicMaterial({
       color: 0x000000, transparent: true, opacity: 0.25, depthWrite: false,
     });
@@ -96,30 +110,34 @@ class BallMesh {
 
   // ------------------------------------------------------------------
   // sync()
-  // Only transfer point between physics and rendering.
-  // Shadow Y must track state.y (terrain height) to prevent the
-  // "floating ball" appearance when terrain is non-zero.
+  // Transfer point between physics and rendering.
+  //
+  // dt is how much real time this visual rotation increment should
+  // cover — pass the frame's actual elapsed time during live play (the
+  // physics may have taken several fixed sub-steps within it; using the
+  // spin at the end of those sub-steps for the whole visual increment is
+  // a fine approximation since spin only changes slowly frame-to-frame).
+  // Defaults to FIXED_DT for playback scrubbing, where "elapsed time
+  // since last render" isn't a meaningful concept (the user just jumped
+  // the slider to an arbitrary point).
+  //
+  // Rotation is now driven by the ball's true angular velocity vector
+  // (wx, wy, wz) instead of a ground-speed-derived roll direction. With
+  // real dimple geometry the spin is actually visible, so it has to be
+  // the real spin — backspin/sidespin in flight, and, since
+  // CollisionHandler now enforces the rolling-without-slip constraint
+  // every step, wz/wx correctly track ground speed during the roll phase
+  // too, so this one code path is correct in every phase without a
+  // separate "rolling visual" special case.
   // ------------------------------------------------------------------
-  sync(state) {
-    // Ball sits on top of the terrain surface — rendered at VISUAL_RADIUS
-    // so its (exaggerated) bottom still touches state.y exactly, instead
-    // of floating/sinking by the visual-vs-physics radius difference.
-    this.mesh.position.set(state.x, state.y + VISUAL_RADIUS, state.z);
+  sync(state, dt = CONSTANTS.FIXED_DT) {
+    // Ball sits on top of the terrain surface
+    this.mesh.position.set(state.x, state.y + CONSTANTS.RADIUS, state.z);
 
-    // Roll the ball visually based on ground speed. Uses the true physics
-    // radius (not VISUAL_RADIUS) so the spin rate matches real RPM — the
-    // bigger rendered sphere rolling at the "correct" surface speed for
-    // its true size looks right; scaling this by VISUAL_RADIUS would make
-    // it spin visibly slower than the backspin numbers say it should.
-    const speed = Math.sqrt(state.vx ** 2 + state.vz ** 2);
-    if (speed > 0.01) {
-      const axisX = -state.vz / speed;
-      const axisZ =  state.vx / speed;
-      const rollRate = speed / CONSTANTS.RADIUS;
-      this.mesh.rotateOnWorldAxis(
-        new THREE.Vector3(axisX, 0, axisZ).normalize(),
-        rollRate * CONSTANTS.FIXED_DT
-      );
+    const wMag = Math.sqrt(state.wx ** 2 + state.wy ** 2 + state.wz ** 2);
+    if (wMag > 1e-4) {
+      this._spinAxis.set(state.wx, state.wy, state.wz).normalize();
+      this.mesh.rotateOnWorldAxis(this._spinAxis, wMag * dt);
     }
 
     // Shadow follows terrain height — critical fix for "floating" appearance.
@@ -136,7 +154,8 @@ class BallMesh {
   }
 
   reset() {
-    this.mesh.position.set(0, VISUAL_RADIUS, 0);
+    this.mesh.position.set(0, CONSTANTS.RADIUS, 0);
+    this.mesh.quaternion.identity();
     this.shadowMesh.position.set(0, 0.02, 0);
     this.shadowMesh.scale.setScalar(1);
     this.shadowMesh.material.opacity = 0.25;

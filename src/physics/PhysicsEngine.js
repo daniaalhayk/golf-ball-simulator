@@ -54,7 +54,11 @@ class PhysicsEngine {
     state.y  += state.vy * dt;
     state.z  += state.vz * dt;
 
-    state.time += dt;
+    state.wx *= 0.998;
+    state.wy *= 0.998;
+    state.wz *= 0.998;
+
+    //state.time += dt;
 
     // --- NaN guard ---
     if (!state.isFinite()) {

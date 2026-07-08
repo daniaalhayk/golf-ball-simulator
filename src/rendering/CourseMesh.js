@@ -11,15 +11,6 @@
 
 import * as THREE from 'three';
 import CONSTANTS  from '../constants.js';
-import { VISUAL_RADIUS } from './BallMesh.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
-
-// Patch in BVH-accelerated raycasting once — used only to bake height data
-// out of the real scanned terrain mesh (see loadScannedTerrain()).
-THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
-THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
-THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 // ── Smoothstep ────────────────────────────────────────────────────────
 function smoothstep(e0, e1, x) {
@@ -220,129 +211,6 @@ class CourseMesh {
     this._greenSlopeDeg = 0;
     this._disposeAll();
     this._buildCourse(style);
-  }
-
-  // Loads a real-world drone-scanned terrain (glTF, CC-BY-4.0 — johnnokomis
-  // on Sketchfab) as a standalone hole instead of the procedural sine-wave
-  // landscape. Tee/green were picked by eye from the scan; the source file
-  // does not preserve real-world units, so an approximate SCALE factor is
-  // applied. Everything downstream (getHeightAt/getSurfaceAt, bounce/roll,
-  // slope) is unchanged — only the height *source* differs.
-  async loadScannedTerrain() {
-    this._disposeAll();
-    this.landscapeStyle = 'realscan';
-
-    const TEE_RAW   = [1.117, 13.96];
-    const GREEN_RAW = [5.085, -13.81];
-    const SCALE     = 6;   // approximate real-world calibration, see notes above
-
-    const dx  = GREEN_RAW[0] - TEE_RAW[0];
-    const dz  = GREEN_RAW[1] - TEE_RAW[1];
-    const angle  = Math.atan2(dz, dx);
-    const L      = Math.hypot(dx, dz) * SCALE;
-
-    const loader = new GLTFLoader();
-    const gltf   = await loader.loadAsync('/models/golf-course-scan/scene.gltf');
-    gltf.scene.traverse(obj => {
-      if (obj.isMesh) {
-        obj.geometry.computeBoundsTree();
-        if (obj.material) obj.material.side = THREE.DoubleSide;
-      }
-    });
-
-    // Sample the tee's real elevation in the model's own native space,
-    // before it gets moved, so the tee lands exactly at local Y=0.
-    this.scene.add(gltf.scene);
-    gltf.scene.updateMatrixWorld(true);
-    const probe   = new THREE.Raycaster();
-    probe.firstHitOnly = true;
-    const teeRawY = this._raycastDown(probe, gltf.scene, TEE_RAW[0], TEE_RAW[1], 100) ?? 0;
-    this.scene.remove(gltf.scene);
-
-    // Re-parent into a localized hole frame: tee → world origin,
-    // green direction → +X (same convention as procedural holes).
-    gltf.scene.position.set(-TEE_RAW[0], -teeRawY, -TEE_RAW[1]);
-    const holeRoot = new THREE.Group();
-    holeRoot.rotation.y = angle;
-    holeRoot.scale.setScalar(SCALE);
-    holeRoot.add(gltf.scene);
-    this.scene.add(holeRoot);
-    holeRoot.updateMatrixWorld(true);
-    this._disposables.push(holeRoot);
-
-    // Single synthetic hole reusing the exact procedural hole shape, so
-    // surface classification / markers / green-slope code need no changes.
-    this._activeHoles = [{
-      id: 'scan', par: 4,
-      tee: [0, 0], green: [L, 0], gr: 9, fw: 12,
-      path: [[0, 0], [L, 0]],
-      bunkers: [], water: null,
-    }];
-    this.WORLD_SIZE     = Math.min(L + 60, 260);
-    this._greenSlopeDeg = 0;
-
-    this._bakeScannedHeightField(holeRoot);
-    this._generateSurfaceField();
-
-    // No procedural ground plane — the scanned mesh itself is the visual.
-    this.groundMesh     = null;
-    this.groundGeometry = null;
-
-    this._buildHoleMarkers();
-    this._buildAimArrow();
-  }
-
-  _raycastDown(raycaster, object3D, x, z, startY) {
-    raycaster.set(new THREE.Vector3(x, startY, z), new THREE.Vector3(0, -1, 0));
-    raycaster.far = startY + 1000;
-    const hits = raycaster.intersectObject(object3D, true);
-    return hits.length ? hits[0].point.y : null;
-  }
-
-  // One-time bake: raycast straight down against the real scanned mesh
-  // and store the result in the same heightField that procedural
-  // landscapes fill with _rawHeight(). Raycasting is the expensive part
-  // (each query walks all 26 sub-meshes' BVHs), so we sample a coarse
-  // 64×64 grid — plenty for rolling-physics-scale slope — and bilinearly
-  // upsample into the full-resolution array everything else reads from.
-  // Cells that miss the mesh (the scan's real edges are ragged) fall
-  // back to the last valid sample instead of dropping to 0.
-  _bakeScannedHeightField(object3D) {
-    const BAKE_N = 64;
-    const coarse = new Float32Array(BAKE_N * BAKE_N);
-    const raycaster = new THREE.Raycaster();
-    raycaster.firstHitOnly = true;
-    const startY = 500;
-    let lastGood = 0;
-
-    for (let gz = 0; gz < BAKE_N; gz++) {
-      for (let gx = 0; gx < BAKE_N; gx++) {
-        const wx = (gx / (BAKE_N - 1) - 0.5) * this.WORLD_SIZE;
-        const wz = (gz / (BAKE_N - 1) - 0.5) * this.WORLD_SIZE;
-        const h  = this._raycastDown(raycaster, object3D, wx, wz, startY);
-        const value = h !== null ? h : lastGood;
-        coarse[gz * BAKE_N + gx] = value;
-        if (h !== null) lastGood = value;
-      }
-    }
-
-    const N = this.GRID;
-    for (let gz = 0; gz < N; gz++) {
-      for (let gx = 0; gx < N; gx++) {
-        const fx = (gx / (N - 1)) * (BAKE_N - 1);
-        const fz = (gz / (N - 1)) * (BAKE_N - 1);
-        const ix = Math.max(0, Math.min(BAKE_N - 2, Math.floor(fx)));
-        const iz = Math.max(0, Math.min(BAKE_N - 2, Math.floor(fz)));
-        const tx = fx - ix, tz = fz - iz;
-        const h00 = coarse[ iz      * BAKE_N + ix    ];
-        const h10 = coarse[ iz      * BAKE_N + ix + 1];
-        const h01 = coarse[(iz + 1) * BAKE_N + ix    ];
-        const h11 = coarse[(iz + 1) * BAKE_N + ix + 1];
-        this.heightField[gz * N + gx] =
-          h00 * (1 - tx) * (1 - tz) + h10 * tx * (1 - tz) +
-          h01 * (1 - tx) * tz       + h11 * tx * tz;
-      }
-    }
   }
 
   // Half-extent of the currently loaded map. Physics uses this for the
@@ -615,8 +483,18 @@ class CourseMesh {
     for (let row = 0; row <= segs; row++) {
       for (let col = 0; col <= segs; col++) {
         const vIdx  = row * (segs + 1) + col;
-        const worldX =  (col / segs - 0.5) * this.WORLD_SIZE;
-        const worldZ = -(row / segs - 0.5) * this.WORLD_SIZE;  // negated: geo.y → world.z
+        // NOTE: after this mesh's rotation.x = -Math.PI/2, a geometry-space
+        // vertex at (x, y_geom, height) lands in world space at
+        // (x, height, -y_geom). PlaneGeometry lays out row 0 at
+        // y_geom = +WORLD_SIZE/2 and row=segs at y_geom = -WORLD_SIZE/2, i.e.
+        // y_geom = (0.5 - row/segs) * WORLD_SIZE, so the vertex's FINAL
+        // world Z is -y_geom = (row/segs - 0.5) * WORLD_SIZE — no extra
+        // negation needed. (The previous version negated this a second
+        // time, which sampled each vertex's height from its Z-mirror
+        // image instead of its own true world position — the rendered
+        // ground was a mirrored copy of the terrain physics actually uses.)
+        const worldX = (col / segs - 0.5) * this.WORLD_SIZE;
+        const worldZ = (row / segs - 0.5) * this.WORLD_SIZE;
         pos.setZ(vIdx, this.getHeightAt(worldX, worldZ));
       }
     }
@@ -637,8 +515,12 @@ class CourseMesh {
     for (let row = 0; row <= segs; row++) {
       for (let col = 0; col <= segs; col++) {
         const vIdx   = row * (segs + 1) + col;
-        const worldX =  (col / segs - 0.5) * this.WORLD_SIZE;
-        const worldZ = -(row / segs - 0.5) * this.WORLD_SIZE;
+        // Same true-world-position mapping as _applyHeightToGeometry —
+        // must match or the color paint and the height bumps (and the
+        // fairway/green markers, which use true coordinates directly)
+        // end up on different, mirrored patches of ground.
+        const worldX = (col / segs - 0.5) * this.WORLD_SIZE;
+        const worldZ = (row / segs - 0.5) * this.WORLD_SIZE;
         const surface = this.getSurfaceAt(worldX, worldZ);
         const c = this._surfaceColor(surface, style);
         const n = (noise(worldX * 0.1, worldZ * 0.1) - 0.5) * 0.04;
@@ -931,10 +813,7 @@ class CourseMesh {
 
   _buildAimArrow() {
     const dir    = new THREE.Vector3(1, 0, 0);
-    // Height matches the ball's rendered center — was a fixed 0.15 m tuned
-    // for the true (tiny) physics radius, so it cut across the top of the
-    // now much larger visual ball instead of through its middle.
-    const origin = new THREE.Vector3(0, VISUAL_RADIUS, 0);
+    const origin = new THREE.Vector3(0, 0.15, 0);
     this._aimArrow = new THREE.ArrowHelper(dir, origin, 28, 0xff8800, 5, 2.5);
     this._aimArrow.visible = true;
     this.scene.add(this._aimArrow);
