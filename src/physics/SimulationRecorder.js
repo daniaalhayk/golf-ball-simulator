@@ -1,9 +1,3 @@
-// physics/SimulationRecorder.js
-// Records a full snapshot of BallState at every physics step
-// during the live simulation run.
-// After simulation ends, provides random-access playback
-// by index — no physics re-computation needed.
-
 class SimulationRecorder {
 
   constructor() {
@@ -84,25 +78,3 @@ class SimulationRecorder {
 }
 
 export default SimulationRecorder;
-
-
-/*
-
-The core idea:
-OrbitControls normally orbits around a fixed point in world space.
-The trick is to update its .target every frame to the ball's current position.
-This way the controls orbit around the ball as it moves,
-while still letting you rotate, zoom, and pan freely with the mouse.
-
-OrbitControls.target = ball position (updated every frame)
-OrbitControls handles all mouse input on top of that
-
-Think of it like a camera drone that always points at the ball, but you control the drone's angle and distance freely.
-
-For the playback scrubber:
-SimulationRecorder runs once during the first live simulation
-and stores a full snapshot at every physics step.
-After the ball stops,the timeline slider appears.
-Dragging it just reads index i from the array and pushes that snapshot into the renderer — no physics runs again.
-
-*/

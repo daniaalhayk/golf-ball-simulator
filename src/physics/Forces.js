@@ -1,16 +1,7 @@
-// physics/Forces.js
-// Pure functions — each takes state + constants and returns a force vector.
-// No side effects. No imports from Three.js.
-// Equations sourced directly from PDF sections 4.1, 4.2, 4.3, 4.4.
-
 import CONSTANTS from '../constants.js';
 
 // ------------------------------------------------------------------
 // gravity()
-// Section 4.1 — F⃗g = m · g⃗
-// Always acts downward on the Y axis.
-// Returns: { fx, fy, fz }
-// ------------------------------------------------------------------
 export function gravity() {
   return {
     fx: 0,
@@ -21,11 +12,6 @@ export function gravity() {
 
 // ------------------------------------------------------------------
 // drag()
-// Section 4.2 — F⃗d = -½ · CD · ρ · A · |v⃗rel| · v⃗rel
-// Quadratic drag — opposes the direction of motion.
-// Uses relative velocity (ball velocity minus wind velocity).
-// Returns: { fx, fy, fz }
-// ------------------------------------------------------------------
 export function drag(state, wind = { vx: 0, vy: 0, vz: 0 }) {
 
   // Section 4.4 — relative velocity (Cross 2024)
@@ -49,7 +35,6 @@ export function drag(state, wind = { vx: 0, vy: 0, vz: 0 }) {
 
 // ------------------------------------------------------------------
 // magnus()
-// Section 4.3 — F⃗M = S · (ω⃗ × v⃗rel)
 // Cross product of spin vector and RELATIVE velocity vector, scaled by S.
 //
 // Paper Eq.11–13 (Burglund & Street, Hinrichsen): the cross product
@@ -66,9 +51,7 @@ export function drag(state, wind = { vx: 0, vy: 0, vz: 0 }) {
 //   ωz > 0  → backspin → lift upward  (positive Y force)
 //   ωy > 0  → slice spin → pushes right (positive Z force)
 //   ωy < 0  → hook spin  → pushes left  (negative Z force)
-//
-// Returns: { fx, fy, fz }
-// ------------------------------------------------------------------
+
 export function magnus(state, wind = { vx: 0, vy: 0, vz: 0 }) {
   const S = CONSTANTS.MAGNUS_S;
 
@@ -86,10 +69,7 @@ export function magnus(state, wind = { vx: 0, vy: 0, vz: 0 }) {
 
 // ------------------------------------------------------------------
 // totalForce()
-// Sums all forces acting on the ball during flight.
-// This is what PhysicsEngine calls — it never calls the above directly.
-// Returns: { fx, fy, fz }
-// ------------------------------------------------------------------
+
 export function totalForce(state, wind) {
   const g = gravity();
   const d = drag(state, wind);
@@ -101,10 +81,3 @@ export function totalForce(state, wind) {
     fz: g.fz + d.fz + m.fz,
   };
 }
-
-/*
-gravity() is section 4.1 — one line of physics, nothing more.
-drag() implements section 4.2 and 4.4 together — the quadratic drag formula using relative velocity, exactly as Cross (2024) specifies. The wind parameter defaults to zero so calling drag(state) without wind still works correctly.
-magnus() is section 4.3 with the cross product fully expanded into its three scalar components. The comments map directly to Jorgensen Chapter 8's explanation of how spin axis direction determines ball curve — this is the part your professor will look at most closely.
-totalForce() is the only function PhysicsEngine.js will ever call — it keeps the integrator clean and unaware of how many forces exist.
-*/

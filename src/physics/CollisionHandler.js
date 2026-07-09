@@ -69,7 +69,7 @@ class CollisionHandler {
     const R = CONSTANTS.RADIUS;
     const absViy = Math.abs(state.vy);
 
-    // 1. Normal restitution (Penner 2002, speed-dependent) — unchanged.
+    // 1. Normal restitution (Penner 2002, speed-dependent) .
     let e = absViy <= 20
       ? CONSTANTS.RESTITUTION_A - CONSTANTS.RESTITUTION_B * absViy + CONSTANTS.RESTITUTION_C * (absViy ** 2)
       : CONSTANTS.RESTITUTION_MIN;

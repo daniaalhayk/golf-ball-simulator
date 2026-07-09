@@ -1,7 +1,3 @@
-// physics/BallState.js
-// Full physical state of the golf ball at any instant.
-// PhysicsEngine reads and writes this each step.
-
 import CONSTANTS from '../constants.js';
 
 class BallState {

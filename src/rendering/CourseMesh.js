@@ -1,6 +1,3 @@
-// rendering/CourseMesh.js
-// Builds a regulation 18-hole golf course.
-//
 // Architecture:
 //   - 128×128 height field (Float32Array) over 800×800 m world space
 //   - 128×128 surface field (Uint8Array) with CONSTANTS.SURFACE_* values

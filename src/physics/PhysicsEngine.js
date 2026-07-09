@@ -1,4 +1,3 @@
-// physics/PhysicsEngine.js
 // Numerical integrator — advances the ball state forward by one fixed timestep.
 // Method: Semi-implicit Euler (section 8.1 of PDF)
 // Timestep: Δt = 0.01 s (section 8.1 of PDF)
@@ -15,7 +14,6 @@ class PhysicsEngine {
 
   // ------------------------------------------------------------------
   // setWind()  — called by main.js when wind sliders change
-  // ------------------------------------------------------------------
   setWind(vx, vy, vz) {
     this.wind = { vx, vy, vz };
   }
@@ -24,7 +22,7 @@ class PhysicsEngine {
   // setTerrain()
   // Receives the CourseMesh instance (duck-typed sampler).
   // Only getHeightAt(wx, wz) is called from here.
-  // ------------------------------------------------------------------
+
   setTerrain(sampler) {
     this.terrain = sampler;
   }
