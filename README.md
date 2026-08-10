@@ -1,5 +1,7 @@
 ﻿# golf-ball-simulator
-<img width="1274" height="725" alt="Screenshot 2026-06-07 023002" src="https://github.com/user-attachments/assets/9b915a58-1a31-422f-a48c-b56aec9c46a1" />
+<img width="1897" height="977" alt="Screenshot 2026-08-10 165246" src="https://github.com/user-attachments/assets/ab8ed33b-eb07-498d-9ce3-bdf7cf5adb1a" />
+
+
 
 This project is a physically accurate golf‑ball simulation that models real‑world ball flight and kinematics. It includes an interactive control panel where you can adjust launch parameters such as swing speed, launch angle, backspin, sidespin, and environmental factors like wind speed and direction.
 
